@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stream-copier-backend"
+version = "0.1.0"
+description = "Live transcript-driven trade copier with NinjaTrader bridge execution."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.12",
+  "uvicorn[standard]>=0.34.0",
+  "pydantic>=2.10.6",
+  "pydantic-settings>=2.7.1",
+  "httpx>=0.28.1",
+  "faster-whisper>=1.1.1",
+  "numpy>=1.26",
+  "webrtcvad-wheels>=2.0.14",
+  "fastembed>=0.4.0",
+  "safetensors>=0.7.0",
+  "transformers>=4.48.0,<5",
+  "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.25.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"

@@ -1,0 +1,471 @@
+:root {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #e9edf3;
+  background:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.35), transparent 38%),
+    radial-gradient(circle at top right, rgba(34, 197, 94, 0.18), transparent 30%),
+    linear-gradient(160deg, #08111d 0%, #0d1728 50%, #121b2e 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: transparent;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  border-radius: 12px;
+  padding: 0.8rem 1rem;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(135deg, #0f766e, #2563eb);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  color: #e9edf3;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.75);
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  padding: 1.5rem;
+  border-right: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(4, 10, 19, 0.72);
+  backdrop-filter: blur(18px);
+}
+
+.content {
+  padding: 1.5rem;
+}
+
+.hero,
+.panel,
+.session-card {
+  background: rgba(10, 18, 31, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.32);
+}
+
+.hero,
+.panel {
+  border-radius: 20px;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: #7dd3fc;
+}
+
+.hero h2,
+.panel h3,
+.panel h1 {
+  margin: 0.35rem 0 0;
+}
+
+.capture-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.status-pill {
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  text-transform: capitalize;
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.status-capturing {
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+}
+
+.status-connecting {
+  background: rgba(250, 204, 21, 0.18);
+  color: #fde047;
+}
+
+.status-reconnecting {
+  background: rgba(96, 165, 250, 0.2);
+  color: #93c5fd;
+}
+
+.status-stopped {
+  background: rgba(148, 163, 184, 0.18);
+  color: #cbd5e1;
+}
+
+.capture-status-detail {
+  margin: 0.75rem 0 0;
+  max-width: 42rem;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.session-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 0.9rem 1rem;
+  border-radius: 16px;
+  color: #dbeafe;
+}
+
+.session-delete {
+  padding: 0.75rem 0.9rem;
+  background: rgba(127, 29, 29, 0.7);
+}
+
+.session-delete:hover:not(:disabled) {
+  background: rgba(153, 27, 27, 0.88);
+}
+
+.session-card.active {
+  border-color: rgba(96, 165, 250, 0.7);
+  background: rgba(30, 64, 175, 0.28);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.panel {
+  padding: 1.4rem;
+}
+
+.panel-wide {
+  grid-column: 1 / -1;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.stats label {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.manual-trade-controls {
+  margin-bottom: 1rem;
+}
+
+.manual-trade-buttons {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.65rem;
+}
+
+.field,
+.toggle-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.field span,
+.toggle-field span {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.toggle-field {
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.toggle-field input {
+  width: auto;
+  min-width: 1.1rem;
+  min-height: 1.1rem;
+  margin: 0;
+}
+
+.position-card,
+.transcript-item,
+.event-row,
+.transcript-partial,
+.latency-card,
+.candidate-card,
+.broker-card {
+  border-radius: 14px;
+  padding: 0.95rem 1rem;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.broker-card {
+  margin-bottom: 1rem;
+}
+
+.broker-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.broker-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.broker-stats label {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+
+.broker-error {
+  margin: 0 0 0.65rem;
+}
+
+.transcript-list,
+.event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 480px;
+  overflow: auto;
+}
+
+.transcript-item span,
+.event-row time,
+.muted {
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.transcript-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: #7dd3fc;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.transcript-partial p {
+  margin: 0;
+}
+
+.latency-card {
+  margin-bottom: 0.75rem;
+}
+
+.candidate-card {
+  margin-bottom: 0.75rem;
+}
+
+.latency-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.85rem;
+  color: #cbd5e1;
+}
+
+.latency-header span,
+.transcript-metrics {
+  color: #94a3b8;
+  font-size: 0.82rem;
+}
+
+.candidate-header,
+.candidate-pill-row,
+.candidate-metrics {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.candidate-header {
+  margin-bottom: 0.7rem;
+  color: #cbd5e1;
+}
+
+.candidate-header span,
+.candidate-pill-row span:last-child,
+.candidate-metrics,
+.candidate-note,
+.candidate-empty {
+  color: #94a3b8;
+  font-size: 0.82rem;
+}
+
+.candidate-note {
+  margin: 0 0 0.7rem;
+}
+
+.candidate-body p {
+  margin: 0 0 0.7rem;
+}
+
+.candidate-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+
+.latency-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.latency-grid label {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+
+.latency-empty {
+  margin: 0;
+}
+
+.transcript-metrics {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+
+.transcript-partial-live {
+  border-color: rgba(34, 197, 94, 0.38);
+  background: rgba(8, 28, 18, 0.72);
+}
+
+.transcript-partial-idle {
+  border-style: dashed;
+}
+
+.event-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.event-execution {
+  border-color: rgba(34, 197, 94, 0.36);
+}
+
+.event-risk {
+  border-color: rgba(250, 204, 21, 0.36);
+}
+
+.event-intent {
+  border-color: rgba(96, 165, 250, 0.36);
+}
+
+.empty-state {
+  display: grid;
+  place-items: center;
+  min-height: 320px;
+}
+
+@media (max-width: 960px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .grid,
+  .stats,
+  .config-grid,
+  .broker-controls,
+  .broker-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  }
+
+  .hero {
+    flex-direction: column;
+  }
+}
