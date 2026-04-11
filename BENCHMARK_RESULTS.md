@@ -197,9 +197,9 @@ Within each fold, the training set is rebalanced: `NO_ACTION` examples are downs
 |--------|------------|-----------|
 | **Accuracy** | Fraction of correctly classified examples | Skewed by dominant `NO_ACTION` class |
 | **Macro F1** | Unweighted mean of per-class F1 scores | Treats all 7 classes equally, penalizes poor performance on rare classes |
-| **Action F1** | F1 computed only on the 6 action classes (excluding `NO_ACTION`) | Primary metric — measures how well the system detects actual trading signals |
-| **Action Precision** | Precision on action classes | How often a predicted action is correct |
-| **Action Recall** | Recall on action classes | How many actual actions are detected |
+| **Action F1** | Binary detection F1: any action prediction on an action example = TP, action prediction on NO_ACTION = FP, NO_ACTION prediction on an action example = FN. Does not distinguish between action types. | Primary metric — measures whether the system detects that *a* trading signal occurred, regardless of which specific action |
+| **Action Precision** | Of all examples predicted as any action class, how many were truly actions | How often a predicted action is correct (vs. false alarm on non-action) |
+| **Action Recall** | Of all true action examples, how many were predicted as some action class | How many actual actions are detected (vs. missed as NO_ACTION) |
 
 **F1 Score** is the harmonic mean of precision and recall:
 

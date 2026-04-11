@@ -28,7 +28,7 @@ LABELS: tuple[ActionTag, ...] = (
 
 _LABEL_TO_ID = {label.value: i for i, label in enumerate(LABELS)}
 
-_DEFAULT_DATASET = Path("data/training_data.jsonl")
+_DEFAULT_DATASET = Path("data/training_data_clean.jsonl")
 
 
 def load_and_split(

@@ -49,8 +49,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset",
         type=Path,
-        default=Path("data/training_data.jsonl"),
-        help="Reviewed execution JSONL dataset path.",
+        default=Path("data/training_data_clean.jsonl"),
+        help="Reviewed execution JSONL dataset path (use training_data_clean.jsonl after cleanup).",
     )
     parser.add_argument(
         "--artifact-dir",

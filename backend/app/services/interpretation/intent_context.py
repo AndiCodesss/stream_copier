@@ -22,12 +22,10 @@ class IntentContextEnvelope:
             self.position_side.value if isinstance(self.position_side, TradeSide) else str(self.position_side or "FLAT")
         )
         last_side = self.last_side.value if isinstance(self.last_side, TradeSide) else str(self.last_side or "NONE")
-        market = f"{self.market_price:.2f}" if self.market_price is not None else "UNKNOWN"
         lines = [
             f"symbol={self.symbol}",
             f"position={position}",
             f"last_side={last_side}",
-            f"market_price={market}",
         ]
         if self.recent_text:
             lines.append(f"recent={_clip(self.recent_text)}")
