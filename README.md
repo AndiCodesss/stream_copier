@@ -177,8 +177,24 @@ Compare ML models for trade-intent classification:
 
 ```bash
 python -m app.services.interpretation.benchmark_models \
-  --models tfidf_logreg tfidf_svm tfidf_mlp distilbert modernbert \
-  --cv 5 --output data/bench_models/results.json
+  --models logreg svm mlp distilbert modernbert \
+  --cv 5 --output data/benchmark_results.json
 ```
 
 Tests five approaches: three classical (TF-IDF with Logistic Regression, SVM, or MLP) and two transformer-based (frozen DistilBERT or ModernBERT encoder with a trained head). Uses transcript-level fold splitting so no transcript leaks across train/test.
+
+### Post-Benchmark Analysis
+
+Extract feature importance and run statistical significance tests:
+
+```bash
+python -m app.services.interpretation.analyze_results \
+  --benchmark-results data/benchmark_results.json \
+  --output data/analysis_results.json
+```
+
+Or run the full reproducible pipeline (cleanup + benchmark + analysis):
+
+```bash
+./reproduce_benchmarks.sh
+```

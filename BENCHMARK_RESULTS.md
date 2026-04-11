@@ -516,3 +516,205 @@ The production system uses **ModernBERT** (not the best-performing model in benc
 - The production classifier loads once at startup and classifies incoming transcript segments in real-time
 
 Based on the benchmark results, retraining the production system with a **LogReg or SVM classifier on cleaned data** would likely improve real-world accuracy. However, the TF-IDF-based models require the full vocabulary to be available at inference time (the fitted `TfidfVectorizer`), which adds a serialization and deployment consideration not present in the current transformer-based pipeline.
+
+---
+
+## 11. Feature Importance Analysis
+
+To understand *why* TF-IDF-based classicals outperform frozen transformers, the top-15 highest-weighted features per class were extracted from the trained LogReg model. Each feature is a unigram or bigram weighted by its logistic regression coefficient — the higher the weight, the more that feature pushes the model toward predicting that class.
+
+### 11.1 Top Features by Class
+
+#### NO_ACTION
+| Weight | Feature |
+|--------|---------|
+| +1.54 | `position flat` |
+| +1.54 | `flat last_side` |
+| +1.49 | `looking` |
+| +1.44 | `flat` |
+| +1.25 | `for` |
+| +1.11 | `watching` |
+| +1.09 | `be` |
+| +1.03 | `looking for` |
+| +1.01 | `if` |
+| +0.85 | `would` |
+
+#### ENTER_LONG
+| Weight | Feature |
+|--------|---------|
+| +2.64 | `long` |
+| +1.85 | `squeeze` |
+| +1.83 | `small` |
+| +1.71 | `position flat` / `flat last_side` |
+| +1.55 | `this long` |
+| +1.55 | `so long` |
+| +1.31 | `long now` |
+| +1.23 | `in this` |
+
+#### ENTER_SHORT
+| Weight | Feature |
+|--------|---------|
+| +1.81 | `on` |
+| +1.63 | `position flat` / `flat last_side` |
+| +1.59 | `short now` |
+| +1.48 | `in` |
+| +1.45 | `on here` |
+| +1.42 | `piece on` |
+| +1.40 | `piece` |
+| +1.30 | `so short` |
+
+#### TRIM
+| Weight | Feature |
+|--------|---------|
+| +3.51 | `some` |
+| +2.09 | `covering` |
+| +1.93 | `myself` |
+| +1.60 | `into` |
+| +1.56 | `paying` |
+| +1.41 | `trimming` |
+| +1.35 | `covering some` |
+| +1.17 | `partial` |
+
+#### EXIT_ALL
+| Weight | Feature |
+|--------|---------|
+| +5.61 | `out` |
+| +2.76 | `out of` |
+| +1.92 | `of this` |
+| +1.67 | `of` |
+| +1.62 | `out here` |
+| +1.17 | `done` |
+| +1.11 | `right out` |
+
+#### MOVE_STOP
+| Weight | Feature |
+|--------|---------|
+| +4.62 | `stop` |
+| +3.03 | `my stop` |
+| +2.90 | `my` |
+| +2.54 | `moving` |
+| +2.13 | `move` |
+| +1.51 | `move my` |
+| +1.49 | `stops` |
+
+#### MOVE_TO_BREAKEVEN
+| Weight | Feature |
+|--------|---------|
+| +3.30 | `break even` |
+| +3.09 | `even` |
+| +2.68 | `breakeven` |
+| +2.45 | `break` |
+| +1.73 | `breakeven current` |
+| +1.44 | `stop` |
+| +1.13 | `still holding` |
+
+### 11.2 Interpretation
+
+The feature weights reveal that trading action language is highly **formulaic and keyword-driven**:
+
+- **EXIT_ALL** is dominated by a single bigram `"out"` (weight +5.61) — traders almost always say "I'm out" or "out of this trade."
+- **MOVE_STOP** has `"stop"` at +4.62 and `"my stop"` at +3.03 — the word "stop" alone is nearly diagnostic.
+- **TRIM** relies on `"some"` (+3.51) from phrases like "covering some" and "taking some off."
+- **MOVE_TO_BREAKEVEN** is captured by `"breakeven"` / `"break even"` with weights above +3.0.
+
+This explains why frozen transformer encoders underperform: the classification signal lies in specific surface-level keywords and short phrases, not in deep semantic understanding. TF-IDF features capture these keywords directly as sparse binary indicators, while frozen BERT embeddings — pretrained on general English — encode these domain-specific phrases into dense vectors that do not separate cleanly without encoder fine-tuning.
+
+The position state features (`position flat`, `position short`, `position long`) also carry high weight, confirming that the structured metadata fields contribute meaningful signal beyond the text alone.
+
+---
+
+## 12. Statistical Significance
+
+Paired t-tests were conducted on per-fold Macro F1 scores to determine whether observed performance differences are statistically significant or within random variation from fold assignment.
+
+### 12.1 Pairwise Comparisons (Macro F1, 5 Folds)
+
+| Comparison | Mean Diff | p-value | Significant (p < 0.05) |
+|-----------|-----------|---------|------------------------|
+| LogReg vs. SVM | +0.0086 | 0.371 | No |
+| LogReg vs. MLP | +0.0875 | **0.010** | **Yes** |
+| SVM vs. MLP | +0.0789 | **0.019** | **Yes** |
+| LogReg vs. ModernBERT | +0.0768 | 0.105 | No |
+| SVM vs. ModernBERT | +0.0682 | 0.184 | No |
+| LogReg vs. DistilBERT | +0.0851 | 0.111 | No |
+| ModernBERT vs. DistilBERT | +0.0082 | 0.781 | No |
+| MLP vs. ModernBERT | -0.0107 | 0.692 | No |
+
+### 12.2 Interpretation
+
+- **LogReg vs. SVM**: The difference is **not significant** (p=0.371). These models perform equivalently on this dataset — both are linear classifiers on identical TF-IDF features.
+- **LogReg/SVM vs. MLP**: The gap **is significant** (p<0.02). The MLP's non-linearity does not compensate for its lack of class weighting and tendency to overfit on minority classes.
+- **Classicals vs. Transformers**: The differences are **not statistically significant** at p<0.05 (p=0.10-0.18), though they approach significance. With only 5 folds, power is limited. The consistent direction (classicals > transformers across all folds) and the mechanistic explanation from feature importance (Section 11) support the finding despite marginal p-values.
+
+---
+
+## 13. Limitations and Methodological Notes
+
+### 13.1 Dataset Composition: NO_ACTION Class
+
+The `NO_ACTION` class (569 examples) is composed of two distinct sub-populations:
+
+| Source | Count | Percentage of NO_ACTION |
+|--------|-------|-------------------------|
+| Genuine non-action (commentary, silence, market analysis) | ~132 | 23% |
+| Remapped `SETUP_LONG` | 87 | 15% |
+| Remapped `SETUP_SHORT` | 350 | 62% |
+
+`SETUP_LONG` and `SETUP_SHORT` were remapped to `NO_ACTION` because setups are not immediately actionable — they describe the trader's bias without triggering a trade. However, this means 77% of `NO_ACTION` training examples actually contain trade-related language (e.g., "looking for a long", "short bias below VWAP"). The model learns to classify these as non-actionable, which is correct for the production system but may inflate `NO_ACTION` recall by making the class easier to predict (setup language is distinctive).
+
+### 13.2 MOVE_TO_BREAKEVEN: Insufficient Support
+
+With only 13-15 examples depending on the dataset version, `MOVE_TO_BREAKEVEN` cannot be reliably evaluated. In 5-fold CV, each test fold contains ~3 examples of this class. F1 scores range from 0.00 (MLP) to 0.44 (LogReg on cleaned data), but these numbers carry high variance. This class is retained as a separate label because it maps to a distinct broker action, but its metrics should be interpreted with caution.
+
+### 13.3 Hyperparameter Choices
+
+All models use default or standard hyperparameters without tuning:
+
+| Model | Key Hyperparameters | Justification |
+|-------|--------------------|---------------|
+| LogReg | C=1.0, balanced weights | Standard regularization strength; balanced weighting addresses class imbalance without separate resampling |
+| SVM | C=1.0, balanced weights | Same rationale as LogReg; linear kernel chosen because data is high-dimensional sparse (20K features) |
+| MLP | (256, 128) hidden, early stopping | Two layers sufficient for non-linear boundaries on TF-IDF; early stopping prevents overfitting |
+| Transformers | lr=3e-3, 20 epochs, AdamW | Standard head-training rate (encoder frozen, so higher LR is appropriate); 20 epochs with small dataset converges reliably |
+| TF-IDF | 20K features, (1,2)-grams, sublinear TF | Bigrams capture key phrases ("i m", "piece on"); sublinear TF reduces impact of repeated words in long transcripts |
+
+No grid search was performed. The dataset (1,442 examples) is too small for a separate validation-based tuning split without further reducing training data. The chosen values are standard in the literature and unlikely to be far from optimal for this problem size.
+
+### 13.4 Frozen Encoder Decision
+
+The transformer models use frozen (non-updated) encoder weights with only a trained linear classification head. This architectural choice was made because:
+
+1. **Dataset size**: Fine-tuning 66M (DistilBERT) or 149M (ModernBERT) parameters on 1,442 examples risks severe overfitting, even with aggressive regularization.
+2. **Compute constraints**: Full fine-tuning requires backpropagating through the entire encoder, increasing memory and time by ~10x compared to frozen embedding + head training.
+3. **Fair comparison baseline**: Frozen encoders isolate the quality of pretrained representations from training procedure differences. If frozen encoders underperform TF-IDF, it demonstrates that general-purpose language representations do not transfer well to this domain — a meaningful finding for the thesis.
+
+A future experiment could explore parameter-efficient fine-tuning (LoRA, adapter layers) as a middle ground, which would adapt encoder representations without full fine-tuning risk.
+
+### 13.5 Statistical Significance
+
+The reported +/- values are **sample standard deviations across 5 folds**, not confidence intervals or p-values. With only k=5 measurements per model, statistical power for detecting small differences is limited. Paired t-tests between model pairs can be run via `analyze_results.py` to assess whether observed differences exceed random variation from fold assignment. Differences smaller than ~2% in Macro F1 should be interpreted cautiously.
+
+### 13.6 Preprocessing
+
+All transcript text is preprocessed by `transcript_normalizer.py` before classification:
+- Lowercased
+- Typographic apostrophes normalized
+- Digit-separating commas removed
+- ASR-specific corrections applied (e.g., "v w a p" → "vwap", "peace on" → "piece on", "break even" → "breakeven")
+
+This preprocessing is applied identically during both training data construction and production inference. The benchmark evaluates models on preprocessed text — raw ASR output would likely produce lower scores due to inconsistent spelling of domain terms.
+
+---
+
+## 14. Reproducibility
+
+All results can be reproduced from the tracked training data:
+
+```bash
+cd backend
+./reproduce_benchmarks.sh
+```
+
+This runs: (1) data cleanup, (2) 5-fold CV for all 5 models, (3) feature importance extraction and statistical significance tests. Outputs are written to `data/` as JSON files.
+
+Required environment: Python 3.12+, `pip install -e .`, GPU optional (CPU works but transformer models are slower).
