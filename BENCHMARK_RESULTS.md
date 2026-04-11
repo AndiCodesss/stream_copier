@@ -353,7 +353,7 @@ Label order: NO_ACTION (NO), ENTER_LONG (EL), ENTER_SHORT (ES), TRIM (TM), EXIT_
 
 ## 7. Results on Cleaned Dataset
 
-After applying the data cleanup pipeline, the benchmark was re-run on the cleaned dataset (1,377 examples after rebalancing, 103 transcripts) for the three classical models.
+After applying the data cleanup pipeline, the benchmark was re-run on the cleaned dataset (1,377 examples after rebalancing, 103 transcripts) for all five models.
 
 ### 7.1 Summary (5-Fold CV, Cleaned Data)
 
@@ -362,6 +362,8 @@ After applying the data cleanup pipeline, the benchmark was re-run on the cleane
 | **SVM** | **0.7952 +/- 0.0208** | 0.6881 +/- 0.0620 | 0.8841 +/- 0.0111 | **0.8997 +/- 0.0307** | 0.8699 +/- 0.0197 |
 | **LogReg** | 0.7848 +/- 0.0208 | **0.7025 +/- 0.0446** | **0.8872 +/- 0.0243** | 0.8625 +/- 0.0328 | **0.9137 +/- 0.0235** |
 | MLP | 0.7262 +/- 0.0267 | 0.5724 +/- 0.0223 | 0.8043 +/- 0.0344 | 0.8958 +/- 0.0330 | 0.7334 +/- 0.0640 |
+| ModernBERT | 0.7267 +/- 0.0123 | 0.6488 +/- 0.0604 | 0.8723 +/- 0.0308 | — | — |
+| DistilBERT | 0.6755 +/- 0.0650 | 0.5875 +/- 0.0289 | 0.8479 +/- 0.0338 | — | — |
 
 ### 7.2 Per-Label Performance (Cleaned Data, Aggregated)
 
@@ -456,6 +458,12 @@ After applying the data cleanup pipeline, the benchmark was re-run on the cleane
 | MLP | Accuracy | 0.7325 | 0.7262 | -0.63% |
 | MLP | Macro F1 | 0.5916 | 0.5724 | -1.92% |
 | MLP | Action F1 | 0.8093 | 0.8043 | -0.50% |
+| ModernBERT | Accuracy | 0.6792 | 0.7267 | **+4.75%** |
+| ModernBERT | Macro F1 | 0.6023 | 0.6488 | **+4.65%** |
+| ModernBERT | Action F1 | 0.8554 | 0.8723 | **+1.69%** |
+| DistilBERT | Accuracy | 0.6375 | 0.6755 | **+3.80%** |
+| DistilBERT | Macro F1 | 0.5941 | 0.5875 | -0.66% |
+| DistilBERT | Action F1 | 0.8371 | 0.8479 | +1.08% |
 
 ### 8.2 Per-Label Improvement (LogReg, Best Model on Macro F1)
 
@@ -504,6 +512,8 @@ With only 13-15 examples, `MOVE_TO_BREAKEVEN` has the lowest F1 across all model
 ### 9.6 Data Cleanup Improves Performance
 
 Removing the uninformative `market_price` placeholder and repairing incorrect position states improved LogReg accuracy by 2.2% and Macro F1 by 2.3%. The improvement was consistent across LogReg and SVM, confirming that the quality issues in the original dataset were introducing learnable noise. The cleanup also improved the model's ability to distinguish between management actions and `NO_ACTION`, as evidenced by the +3.2% improvement in `NO_ACTION` F1.
+
+Notably, **transformers benefited even more from cleanup**: ModernBERT improved by +4.75% accuracy and +4.65% Macro F1 on cleaned data. This suggests that noisy position state features were particularly harmful to dense embeddings, which encode all input features into a single vector — a misleading feature like `position=FLAT` on a TRIM example pollutes the entire embedding, whereas TF-IDF models can partially ignore irrelevant features through their sparse representation.
 
 ---
 
