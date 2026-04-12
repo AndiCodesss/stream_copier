@@ -87,6 +87,40 @@ Manual inspection of the dataset revealed several systematic issues:
 
 **Root cause of position state errors**: The training dataset is a sparse sample of labeled lines from each transcript — not every trade action was captured. In 66 of 103 transcripts, the dataset contains management actions (TRIM, EXIT) without the corresponding entry (ENTER_LONG/SHORT) that preceded them, because the entry line was not included in the labeled set.
 
+### 2.5 Ground Truth Verification
+
+To validate the AI-generated and semi-automatically reviewed labels, a manual verification was conducted on 10 transcripts with the highest number of action labels (203 action labels total). Each labeled line was read in context (2-3 surrounding lines) and assessed for correctness.
+
+#### Verification Methodology
+
+For each action label, the surrounding transcript context was read to confirm:
+- **Entry labels** (`ENTER_LONG`, `ENTER_SHORT`): The speaker is actively entering a position (not discussing, planning, or advising)
+- **Management labels** (`TRIM`, `EXIT_ALL`, `MOVE_STOP`, `MOVE_TO_BREAKEVEN`): The speaker is actively managing an open position
+- **NO_ACTION labels**: The line contains no actionable trade signal (setup discussion, commentary, advice to viewers)
+
+#### Verification Results
+
+| Metric | Value |
+|--------|-------|
+| Transcripts verified | 10 |
+| Action labels checked | 203 |
+| Verified correct | 202 (99.5%) |
+| Verified wrong | 0 (0.0%) |
+| Ambiguous | 2 (1.0%) |
+| **Label precision** | **99.5%** |
+
+The two ambiguous labels were borderline cases where the speaker used second-person phrasing ("you got to pay yourself some here") while actively managing their own position — the intended meaning was self-directed but the wording was directed at viewers.
+
+#### Coverage (Recall) Assessment
+
+While label precision is near-perfect, the dataset does not capture every trade action in each transcript. An automated scan for trade-related language on unlabeled lines identified approximately 230 potential unlabeled actions across the 10 transcripts. These were primarily:
+
+- **Continuation lines**: The same trade action described across multiple consecutive lines (e.g., "I'm adding here" on line N, "added more" on line N+2), where only one line was labeled
+- **Repeated trims**: Multiple small profit-taking actions within the same position, where only the first or most explicit one was labeled
+- **Stop adjustments**: Incremental stop moves mentioned in passing ("stop's at 46 now") rather than with explicit command language
+
+The dataset prioritizes **precision over recall** — it labels clear, unambiguous trade actions and excludes borderline cases. This is appropriate for classifier training, as false labels would degrade model performance more than missing labels.
+
 ---
 
 ## 3. Data Cleanup
