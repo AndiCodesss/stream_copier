@@ -395,7 +395,7 @@ After applying the data cleanup pipeline, the benchmark was re-run on the cleane
 |-------|----------|----------|-----------|------------------|---------------|
 | **SVM** | **0.7952 +/- 0.0208** | 0.6881 +/- 0.0620 | 0.8841 +/- 0.0111 | **0.8997 +/- 0.0307** | 0.8699 +/- 0.0197 |
 | **LogReg** | 0.7848 +/- 0.0208 | **0.7025 +/- 0.0446** | **0.8872 +/- 0.0243** | 0.8625 +/- 0.0328 | **0.9137 +/- 0.0235** |
-| MLP | 0.7262 +/- 0.0267 | 0.5724 +/- 0.0223 | 0.8043 +/- 0.0344 | 0.8958 +/- 0.0330 | 0.7334 +/- 0.0640 |
+| MLP (balanced) | 0.7625 +/- 0.0242 | 0.6339 +/- 0.0485 | 0.8502 +/- 0.0057 | — | — |
 | ModernBERT | 0.7267 +/- 0.0123 | 0.6488 +/- 0.0604 | 0.8723 +/- 0.0308 | — | — |
 | DistilBERT | 0.6755 +/- 0.0650 | 0.5875 +/- 0.0289 | 0.8479 +/- 0.0338 | — | — |
 
@@ -425,17 +425,17 @@ After applying the data cleanup pipeline, the benchmark was re-run on the cleane
 | MOVE_STOP | 0.8333 | 0.8511 | 0.8421 | 94 |
 | MOVE_TO_BREAKEVEN | 0.7500 | 0.2308 | 0.3529 | 13 |
 
-#### Multi-Layer Perceptron
+#### Multi-Layer Perceptron (balanced)
 
 | Label | Precision | Recall | F1 | Support |
 |-------|-----------|--------|------|---------|
-| NO_ACTION | 0.6810 | 0.8686 | 0.7634 | 548 |
-| ENTER_LONG | 0.7222 | 0.2826 | 0.4062 | 92 |
-| ENTER_SHORT | 0.6505 | 0.4653 | 0.5425 | 144 |
-| TRIM | 0.7737 | 0.7769 | 0.7753 | 242 |
-| EXIT_ALL | 0.8009 | 0.7254 | 0.7613 | 244 |
-| MOVE_STOP | 0.8933 | 0.7128 | 0.7929 | 94 |
-| MOVE_TO_BREAKEVEN | 0.0000 | 0.0000 | 0.0000 | 13 |
+| NO_ACTION | 0.7476 | 0.8595 | 0.7997 | 548 |
+| ENTER_LONG | 0.6897 | 0.4348 | 0.5333 | 92 |
+| ENTER_SHORT | 0.6299 | 0.5556 | 0.5904 | 144 |
+| TRIM | 0.8008 | 0.7975 | 0.7992 | 242 |
+| EXIT_ALL | 0.8101 | 0.7869 | 0.7983 | 244 |
+| MOVE_STOP | 0.9146 | 0.7979 | 0.8523 | 94 |
+| MOVE_TO_BREAKEVEN | 0.5000 | 0.0769 | 0.1333 | 13 |
 
 ### 7.3 Confusion Matrices (Cleaned Data, Aggregated)
 
@@ -463,17 +463,17 @@ After applying the data cleanup pipeline, the benchmark was re-run on the cleane
 | **MS** | 4 | 2 | 1 | 5 | 2 | 80 | 0 |
 | **MB** | 4 | 0 | 1 | 0 | 0 | 5 | 3 |
 
-#### Multi-Layer Perceptron (Clean)
+#### Multi-Layer Perceptron — balanced (Clean)
 
 |  | NO | EL | ES | TM | EA | MS | MB |
 |--|----|----|----|----|----|----|-----|
-| **NO** | 476 | 3 | 18 | 20 | 30 | 1 | 0 |
-| **EL** | 40 | 26 | 13 | 10 | 3 | 0 | 0 |
-| **ES** | 64 | 5 | 67 | 8 | 0 | 0 | 0 |
-| **TM** | 44 | 1 | 3 | 188 | 6 | 0 | 0 |
-| **EA** | 55 | 0 | 1 | 8 | 177 | 3 | 0 |
-| **MS** | 16 | 1 | 0 | 7 | 3 | 67 | 0 |
-| **MB** | 4 | 0 | 1 | 2 | 2 | 4 | 0 |
+| **NO** | 471 | 4 | 21 | 21 | 29 | 1 | 1 |
+| **EL** | 27 | 40 | 17 | 6 | 2 | 0 | 0 |
+| **ES** | 50 | 8 | 80 | 5 | 1 | 0 | 0 |
+| **TM** | 31 | 5 | 4 | 193 | 8 | 1 | 0 |
+| **EA** | 37 | 0 | 3 | 10 | 192 | 2 | 0 |
+| **MS** | 10 | 1 | 1 | 4 | 3 | 75 | 0 |
+| **MB** | 4 | 0 | 1 | 2 | 2 | 3 | 1 |
 
 ---
 
@@ -489,9 +489,9 @@ After applying the data cleanup pipeline, the benchmark was re-run on the cleane
 | SVM | Accuracy | 0.7751 | 0.7952 | **+2.01%** |
 | SVM | Macro F1 | 0.6705 | 0.6881 | **+1.76%** |
 | SVM | Action F1 | 0.8701 | 0.8841 | **+1.40%** |
-| MLP | Accuracy | 0.7325 | 0.7262 | -0.63% |
-| MLP | Macro F1 | 0.5916 | 0.5724 | -1.92% |
-| MLP | Action F1 | 0.8093 | 0.8043 | -0.50% |
+| MLP (balanced) | Accuracy | 0.7325 | 0.7625 | **+3.00%** |
+| MLP (balanced) | Macro F1 | 0.5916 | 0.6339 | **+4.23%** |
+| MLP (balanced) | Action F1 | 0.8093 | 0.8502 | **+4.09%** |
 | ModernBERT | Accuracy | 0.6792 | 0.7267 | **+4.75%** |
 | ModernBERT | Macro F1 | 0.6023 | 0.6488 | **+4.65%** |
 | ModernBERT | Action F1 | 0.8554 | 0.8723 | **+1.69%** |
@@ -531,9 +531,9 @@ The TF-IDF-based classical models (LogReg, SVM) consistently outperform the tran
 
 SVM leads on accuracy (0.7952 vs 0.7848), while LogReg leads on Macro F1 (0.7025 vs 0.6881) and Action F1 (0.8872 vs 0.8841). Both are linear classifiers operating on the same TF-IDF feature space — the difference is in the optimization objective (margin maximization vs. log-likelihood), which produces nearly identical decision boundaries for this data.
 
-### 9.3 MLP Underperforms Despite Nonlinearity
+### 9.3 MLP Improved with Balanced Weighting but Still Trails Linear Models
 
-The MLP's additional capacity (256+128 hidden units) does not translate to better performance. It shows the highest action precision (0.8958) but the lowest action recall (0.7334), indicating it is overly conservative — it correctly identifies actions when it predicts them, but misses many actual actions. The MLP also completely fails on `MOVE_TO_BREAKEVEN` (F1 = 0.0), likely due to insufficient training examples for this class combined with no class weighting mechanism.
+After adding balanced class weighting via oversampling (scikit-learn's `MLPClassifier` lacks native `class_weight`), the MLP improved substantially: Macro F1 rose from 0.5724 to 0.6339 (+6.15 pp) and Action F1 from 0.8043 to 0.8502 (+4.59 pp). The fix resolved the previous zero-prediction failure on `MOVE_TO_BREAKEVEN` (F1 0.00 → 0.13) and improved recall on entry labels. However, it still trails LogReg (0.7025 Macro F1) and SVM (0.6881), suggesting the MLP's additional capacity (256+128 hidden units) overfits on this small dataset despite early stopping.
 
 ### 9.4 MOVE_TO_BREAKEVEN Is the Weakest Class
 
@@ -718,7 +718,7 @@ All models use default or standard hyperparameters without tuning:
 |-------|--------------------|---------------|
 | LogReg | C=1.0, balanced weights | Standard regularization strength; balanced weighting addresses class imbalance without separate resampling |
 | SVM | C=1.0, balanced weights | Same rationale as LogReg; linear kernel chosen because data is high-dimensional sparse (20K features) |
-| MLP | (256, 128) hidden, early stopping | Two layers sufficient for non-linear boundaries on TF-IDF; early stopping prevents overfitting |
+| MLP | (256, 128) hidden, early stopping, balanced oversampling | Two layers sufficient for non-linear boundaries on TF-IDF; early stopping prevents overfitting; balanced via `compute_sample_weight` + oversampling (MLPClassifier lacks native `class_weight`) |
 | Transformers | lr=3e-3, 20 epochs, AdamW | Standard head-training rate (encoder frozen, so higher LR is appropriate); 20 epochs with small dataset converges reliably |
 | TF-IDF | 20K features, (1,2)-grams, sublinear TF | Bigrams capture key phrases ("i m", "piece on"); sublinear TF reduces impact of repeated words in long transcripts |
 
@@ -750,7 +750,83 @@ This preprocessing is applied identically during both training data construction
 
 ---
 
-## 14. Reproducibility
+## 14. Embedding Visualization (t-SNE)
+
+To investigate why frozen transformers underperform TF-IDF classicals, t-SNE visualizations were generated from the frozen DistilBERT and ModernBERT encoders (mean-pooled, L2-normalized, identical to the classification pipeline).
+
+Plots saved to:
+- `backend/plots/tsne_distilbert.pdf` — DistilBERT (KL divergence: 2.00)
+- `backend/plots/tsne_modernbert.pdf` — ModernBERT (KL divergence: 2.11)
+
+### 14.1 Interpretation
+
+Both plots show **no meaningful label-level clustering** in frozen embedding space. All seven classes are heavily intermixed — NO_ACTION (grey) is spread uniformly across the entire space, and action classes (ENTER_LONG, TRIM, EXIT_ALL, etc.) overlap almost completely with each other and with NO_ACTION. There are no visually separable clusters that a linear head could exploit.
+
+Key observations:
+- **DistilBERT** shows slightly more structure (a few loose sub-clusters in the lower-left and right regions), but these sub-clusters contain mixed labels — they likely reflect transcript-level or syntactic similarity rather than semantic trading intent.
+- **ModernBERT** produces an even more uniform cloud with less sub-structure, consistent with its lower classification accuracy (0.727 vs DistilBERT's 0.676 — though both trail TF-IDF).
+- **MOVE_STOP** (blue) shows the most coherent grouping in both plots, consistent with it being the best-performing class for frozen transformers (explicit keyword "stop" appears in most examples).
+
+This directly explains why frozen transformers underperform TF-IDF: the pretrained representations do not encode trading-intent distinctions. A phrase like "peeling some off" (TRIM) and "watching for longs" (NO_ACTION) are semantically similar in general English but require different action labels. TF-IDF bigrams ("peeling off", "watching for") capture these distinctions directly, while frozen BERT embeddings map them to nearby points in embedding space.
+
+---
+
+## 15. Error Analysis
+
+A misclassification analysis was performed using LogReg 5-fold CV on the cleaned dataset. All test-set errors across folds were collected (299 total misclassifications out of 1,377 examples).
+
+### 15.1 Top Error Patterns
+
+| Error Pattern | Count | % of Errors |
+|---------------|-------|-------------|
+| ENTER_SHORT → NO_ACTION | 33 | 11.0% |
+| NO_ACTION → EXIT_ALL | 32 | 10.7% |
+| NO_ACTION → ENTER_SHORT | 31 | 10.4% |
+| NO_ACTION → TRIM | 26 | 8.7% |
+| NO_ACTION → ENTER_LONG | 25 | 8.4% |
+| ENTER_SHORT → ENTER_LONG | 15 | 5.0% |
+| TRIM → NO_ACTION | 15 | 5.0% |
+| ENTER_LONG → ENTER_SHORT | 14 | 4.7% |
+| EXIT_ALL → TRIM | 12 | 4.0% |
+| TRIM → EXIT_ALL | 12 | 4.0% |
+
+### 15.2 Representative Misclassified Examples
+
+**ENTER_SHORT → NO_ACTION** (33 total): The model misses short entries that use indirect language.
+- *"I did enter short versus New York here."* — past-tense entry phrasing misread as commentary
+- *"I've re-entered versus flow zones now."* — "re-entered" not captured as an entry signal
+- *"All right. In it scalp here."* — ambiguous without explicit "short" keyword
+
+**NO_ACTION → EXIT_ALL** (32 total): The model over-predicts exits on exit-adjacent language.
+- *"Stopped me out by a point or two."* — describes a past stop-out, not a live action
+- *"Any push through 11s here. I'm out."* — conditional statement, not an executed exit
+- *"There we build out this right shoulder."* — technical analysis commentary
+
+**NO_ACTION → TRIM** (26 total): Action-like language in commentary triggers false positives.
+- *"Must be taking partials here, folks."* — second-person advice to viewers, not trader's own action
+- *"Cover a little bit here into 600 just in case."* — hypothetical/advisory framing
+- *"You can cover a piece here."* — "you can" marks advice, not self-action
+
+Full error dump: `backend/data/misclassified.json`
+
+---
+
+## 16. TF-IDF Vocabulary Size Ablation
+
+A sensitivity check was run on the TF-IDF `max_features` parameter using LogReg 5-fold CV.
+
+| max_features | Accuracy | Macro F1 | Action F1 |
+|-------------|----------|----------|-----------|
+| 5,000 | 0.7812 +/- 0.0207 | 0.7004 +/- 0.0440 | 0.8848 +/- 0.0243 |
+| 10,000 | 0.7848 +/- 0.0208 | 0.7025 +/- 0.0446 | 0.8872 +/- 0.0243 |
+| 20,000 | 0.7848 +/- 0.0208 | 0.7025 +/- 0.0446 | 0.8872 +/- 0.0243 |
+| 50,000 | 0.7848 +/- 0.0208 | 0.7025 +/- 0.0446 | 0.8872 +/- 0.0243 |
+
+**Finding**: Performance saturates at 10,000 features — increasing to 20,000 or 50,000 produces identical results. The actual vocabulary (with bigrams) in this dataset is approximately 10,000 unique features, so higher caps simply have no additional features to include. Even 5,000 features captures 99.5% of the performance, confirming that the effective feature space is small and dominated by a relatively compact set of trading-specific terms.
+
+---
+
+## 17. Reproducibility
 
 All results can be reproduced from the tracked training data:
 

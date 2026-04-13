@@ -215,10 +215,11 @@ class TfidfSVM:
 
 
 from sklearn.neural_network import MLPClassifier
+from sklearn.utils.class_weight import compute_sample_weight
 
 
 class TfidfMLP:
-    """TF-IDF + 2-layer MLP baseline."""
+    """TF-IDF + 2-layer MLP baseline with balanced class weighting."""
 
     def __init__(self) -> None:
         self._vectorizer = TfidfVectorizer(max_features=20_000, ngram_range=(1, 2), sublinear_tf=True)
@@ -233,7 +234,6 @@ class TfidfMLP:
     def fit(self, texts: list[str], labels: list[int]) -> None:
         X = self._vectorizer.fit_transform(texts)
         n_samples = X.shape[0]
-        # early_stopping requires at least 1 validation sample; disable for tiny datasets
         use_early_stopping = n_samples >= 10
         self._clf = MLPClassifier(
             hidden_layer_sizes=(256, 128),
@@ -242,7 +242,23 @@ class TfidfMLP:
             validation_fraction=0.15 if use_early_stopping else 0.0,
             random_state=42,
         )
-        self._clf.fit(X, labels)
+        # MLPClassifier lacks class_weight; replicate via sample_weight
+        sample_weights = compute_sample_weight("balanced", labels)
+        # Repeat samples proportionally to their weight to approximate sample_weight
+        # (sklearn MLP.fit does not accept sample_weight, so we oversample)
+        import numpy as np
+        rng = np.random.RandomState(42)
+        weights_normalized = sample_weights / sample_weights.min()
+        indices = []
+        for i, w in enumerate(weights_normalized):
+            count = int(np.round(w))
+            indices.extend([i] * max(1, count))
+        indices = np.array(indices)
+        rng.shuffle(indices)
+        from scipy.sparse import issparse
+        X_resampled = X[indices] if issparse(X) else X[indices]
+        labels_resampled = [labels[i] for i in indices]
+        self._clf.fit(X_resampled, labels_resampled)
 
     def predict(self, texts: list[str]) -> list[int]:
         X = self._vectorizer.transform(texts)
