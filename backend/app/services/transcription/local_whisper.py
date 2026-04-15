@@ -561,7 +561,9 @@ class LocalWhisperTranscriber(BaseTranscriber):
         if decode_profile != "final":
             return text, confidence
 
-        if text and not self._is_degenerate_transcript(text):
+        if not text:
+            return "", 0.0
+        if not self._is_degenerate_transcript(text):
             return text, confidence
 
         retry_segments = self._decode_segments(

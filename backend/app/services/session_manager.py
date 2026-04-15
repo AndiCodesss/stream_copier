@@ -302,6 +302,8 @@ class SessionManager:
                 await self._sync_session_from_broker(session, force_refresh=True)
                 self._refresh_execution_result(session, result)
             await self._emit_execution(session.id, result)
+            if not result.approved and len(intents) > 1:
+                break
 
         return session.model_copy(deep=True)
 
@@ -503,6 +505,7 @@ class SessionManager:
             return
 
         pending_preview = self._get_pending_preview_execution(session.id)
+        expired_preview = self._pop_expired_preview_execution(session.id)
         if pending_preview is not None:
             if self._interpreter.confirm_preview_entry(session, segment, pending_intent=pending_preview.intent):
                 self._pending_preview_executions.pop(session.id, None)
@@ -530,7 +533,18 @@ class SessionManager:
                 },
             )
             await self._flatten_preview_entry(session, pending_preview)
-            return
+            # Fall through to normal interpretation so the final segment's
+            # own trading signal (if any) is not silently lost.
+
+        if expired_preview is not None:
+            await self._emit(
+                session.id,
+                EventType.warning,
+                "Preview entry expired",
+                "Preview confirmation window expired. Flattening position.",
+                {"intent": expired_preview.intent.model_dump(mode="json")},
+            )
+            await self._flatten_preview_entry(session, expired_preview)
 
         await self._sync_session_from_broker(session)
 
@@ -626,8 +640,16 @@ class SessionManager:
             return None
         if datetime.now(UTC) - pending.executed_at <= self._preview_confirmation_window:
             return pending
-        self._pending_preview_executions.pop(session_id, None)
         return None
+
+    def _pop_expired_preview_execution(self, session_id: str) -> PendingPreviewExecution | None:
+        """Remove and return an expired preview execution, or None if not expired."""
+        pending = self._pending_preview_executions.get(session_id)
+        if pending is None:
+            return None
+        if datetime.now(UTC) - pending.executed_at <= self._preview_confirmation_window:
+            return None
+        return self._pending_preview_executions.pop(session_id, None)
 
     async def _maybe_execute_preview_entry(self, session: StreamSession, segment: TranscriptSegment) -> None:
         if not session.config.auto_execute or session.config.execution_mode == ExecutionMode.review:

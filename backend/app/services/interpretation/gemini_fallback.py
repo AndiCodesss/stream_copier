@@ -369,8 +369,12 @@ def _contains_any(patterns: tuple[str, ...], text: str) -> bool:
 
 
 def _infer_side_from_text(text: str) -> TradeSide | None:
-    if _contains_any(_SHORT_HINT_PATTERNS, text):
+    has_short = _contains_any(_SHORT_HINT_PATTERNS, text)
+    has_long = _contains_any(_LONG_HINT_PATTERNS, text)
+    if has_short and has_long:
+        return None
+    if has_short:
         return TradeSide.short
-    if _contains_any(_LONG_HINT_PATTERNS, text):
+    if has_long:
         return TradeSide.long
     return None

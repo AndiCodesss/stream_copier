@@ -20,7 +20,7 @@ _DEFAULT_LABELS: tuple[ActionTag, ...] = (
 )
 
 _NON_ACTION_LABELS = {ActionTag.no_action}
-_ENTRY_LABELS = {ActionTag.enter_long, ActionTag.enter_short}
+_ENTRY_LABELS = {ActionTag.enter_long, ActionTag.enter_short, ActionTag.add}
 _MANAGEMENT_LABELS = {ActionTag.trim, ActionTag.exit_all, ActionTag.move_stop, ActionTag.move_to_breakeven}
 
 

@@ -144,8 +144,12 @@ def assess_trade_candidate(
 
 
 def _side_hint_from_text(text: str) -> TradeSide | None:
-    if re.search(r"\blong\b", text):
+    has_long = bool(re.search(r"\blong\b", text))
+    has_short = bool(re.search(r"\bshort\b", text))
+    if has_long and has_short:
+        return None
+    if has_long:
         return TradeSide.long
-    if re.search(r"\bshort\b", text):
+    if has_short:
         return TradeSide.short
     return None
