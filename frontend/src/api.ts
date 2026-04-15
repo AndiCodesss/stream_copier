@@ -8,17 +8,21 @@ async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let detail = `Request failed (${response.status})`;
     try {
-      const payload = (await response.json()) as { detail?: string; message?: string };
-      if (payload.detail) {
-        detail = payload.detail;
-      } else if (payload.message) {
-        detail = payload.message;
+      const textBody = await response.text();
+      try {
+        const payload = JSON.parse(textBody) as { detail?: string; message?: string };
+        if (payload.detail) {
+          detail = payload.detail;
+        } else if (payload.message) {
+          detail = payload.message;
+        }
+      } catch {
+        if (textBody.trim()) {
+          detail = textBody.trim();
+        }
       }
     } catch {
-      const textBody = await response.text();
-      if (textBody.trim()) {
-        detail = textBody.trim();
-      }
+      // Body unreadable — keep the generic status message.
     }
     throw new Error(detail);
   }

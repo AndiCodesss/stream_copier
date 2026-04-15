@@ -201,7 +201,7 @@ _MOVE_STOP_PATTERNS = [
     r"\bmove(?:d|ing)? (?:my )?stop\b",
     r"\bmoving (?:my )?stop\b",
     r"\bstop(?:s)? (?:is )?(?:now )?(?:going to |at )\d+\b",
-    r"\btrail(?:ing)? (?:this |more )?\b",
+    r"\btrail(?:ing)? (?:this|more)\b",
     r"\bstop(?:s)? moving (?:down|up)\b",
     r"\bput (?:it |my stop )at \d+\b",
 ]

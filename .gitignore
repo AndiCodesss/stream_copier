@@ -10,3 +10,5 @@ frontend/dist/
 .env
 .DS_Store
 transcripts_new/
+transcripts/
+image.png

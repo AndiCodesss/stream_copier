@@ -14,8 +14,7 @@ class EventLogStore:
     def append(self, event: TimelineEvent) -> None:
         path = self._base_dir / f"{event.session_id}.jsonl"
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event.model_dump(mode="json")))
-            handle.write("\n")
+            handle.write(json.dumps(event.model_dump(mode="json")) + "\n")
 
     def delete(self, session_id: str) -> None:
         path = self._base_dir / f"{session_id}.jsonl"

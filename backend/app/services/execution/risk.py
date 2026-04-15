@@ -56,7 +56,7 @@ class RiskEngine:
             if session.position is None:
                 return RiskDecision(approved=False, reason="No open position to manage.", intent=intent)
 
-        if session.position is not None and _position_size(session.position) > self._settings.max_contract_size:
+        if intent.tag in ENTRY_ACTIONS and session.position is not None and _position_size(session.position) > self._settings.max_contract_size:
             return RiskDecision(approved=False, reason="Position size already exceeds cap.", intent=intent)
 
         return RiskDecision(approved=True, reason="Approved.", intent=intent)

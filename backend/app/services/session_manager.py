@@ -181,7 +181,7 @@ class SessionManager:
         return session
 
     async def delete_session(self, session_id: str) -> None:
-        session = self._sessions.pop(session_id, None)
+        session = self._sessions.get(session_id)
         if session is None:
             raise KeyError(session_id)
         self._interpreter.clear_session(session_id)
@@ -199,6 +199,9 @@ class SessionManager:
         if transcriber is not None:
             await transcriber.close()
 
+        # Remove from _sessions last so callbacks during cleanup can still
+        # look up the session (e.g. transcriber flush → on_segment).
+        self._sessions.pop(session_id, None)
         self._session_store.delete(session_id)
         self._store.delete(session_id)
 
