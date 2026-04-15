@@ -30,7 +30,7 @@ Every stage is its own module. They're loosely connected through the session man
 
 When you click "Share YouTube Tab" in the dashboard, the browser uses the Web Audio API to capture whatever audio is playing in that tab. The app creates an AudioWorklet (a low-level audio processor that runs on a separate thread) to grab chunks of raw PCM audio at 48 kHz.
 
-These chunks get sent over a WebSocket connection to the backend every ~30ms. The WebSocket stays open for the entire session. If the connection drops, the frontend automatically reconnects with exponential backoff (starts at 750ms, maxes out at 3 seconds).
+These chunks get sent over a WebSocket connection to the backend every ~30ms. The WebSocket stays open for the entire session. If the connection drops, the frontend automatically reconnects with linear backoff (750ms per attempt, capped at 3 seconds).
 
 The frontend also handles:
 - Creating, listing, and deleting sessions
@@ -52,10 +52,10 @@ Whisper needs 16 kHz audio, but the browser sends 48 kHz. This file has one func
 
 How it works:
 1. Convert the raw bytes into a NumPy array of 16-bit integers
-2. Normalize to floating point values between -1 and 1
+2. Cast to float32 for arithmetic (values stay in the PCM-16 range, not normalized to [-1, 1])
 3. Calculate where each target sample falls in the source (e.g., target sample 0 maps to source sample 0, target sample 1 maps to source sample 3, etc.)
 4. Use linear interpolation between the two nearest source samples to compute each target sample
-5. Convert back to 16-bit integers and return as bytes
+5. Clip to [-32768, 32767] and convert back to 16-bit integers and return as bytes
 
 If the source and target rates are the same, it just returns the original data untouched.
 
@@ -74,7 +74,7 @@ There are two backends:
 **Energy-based** (fallback): Simpler approach. Computes the RMS (root mean square) energy of each frame. If the energy is above a threshold, it's speech. Less accurate but doesn't need the WebRTC library.
 
 A segment is finalized when:
-- Silence has lasted long enough (`silence_duration_ms`, default ~800ms), OR
+- Silence has lasted long enough (`silence_duration_ms`, default 300ms), OR
 - The segment hit the maximum length (`max_duration_ms`)
 
 Too-short segments (below `min_duration_ms`) get discarded — they're usually noise.
@@ -113,20 +113,21 @@ Manages the assembly of preview transcripts. Since previews run on incomplete au
 
 **File:** `backend/app/services/interpretation/transcript_normalizer.py`
 
-Whisper makes predictable mistakes with trading jargon. This module runs a set of find-and-replace corrections on every transcript before it reaches the intent detector:
+Whisper makes predictable mistakes with trading jargon. This module lowercases the text, normalizes curly apostrophes, strips commas from numbers, then runs 14 regex replacements:
 
 | Whisper says | Corrected to |
 |-------------|-------------|
-| "peace" | "piece" (as in "piece on") |
-| "break even" | "breakeven" |
-| "v w a p" | "vwap" |
-| "m n q" | "MNQ" |
-| "n q" | "NQ" |
-| "m e s" | "MES" |
-| "e s" | "ES" |
-| "10,600" | "10600" (removes commas from numbers) |
+| "v w a p" or "view up" or "vw up" | "vwap" |
+| "break even" / "broke even" | "breakeven" |
+| "got my ad on" | "got my add on" |
+| "m n q" | "mnq" |
+| "n q" | "nq" |
+| "m e s" | "mes" |
+| "e s" | "es" |
+| "paying myself peace" | "paying myself piece" |
+| "peace on/here/there/at/versus" | "piece on/here/..." |
 
-There are about 15 corrections total. They're intentionally conservative — only patterns that are unambiguous in a trading context.
+The "peace" to "piece" correction only fires in specific trading contexts (after "paying myself", "paid myself", or before words like "on", "here", "versus") — it won't touch unrelated uses. All outputs are lowercase. There are 17 total correction operations (3 inline + 14 regex). They're intentionally conservative — only patterns that are unambiguous in a trading context.
 
 ---
 
@@ -138,23 +139,25 @@ This is the most complex part of the system. It takes clean transcript text and 
 
 **File:** `backend/app/services/interpretation/action_language.py`
 
-The foundation. Contains 500+ regex patterns organized by action type:
+The foundation. Contains 195 regex patterns organized by action type:
 
-**Entry patterns** (23 per side): Match phrases like "I'm long", "going short", "buying here", "got my entry". Each returns a `PhraseSignal` with the action tag (`ENTER_LONG`/`ENTER_SHORT`) and confidence.
+**Entry patterns** (23 long + 25 short + 32 side-neutral = 80 total): Match phrases like "I'm long", "going short", "buying here", "got my entry". Side-neutral patterns ("small piece on here", "I'm in this") use position context to determine the side. Each returns a `PhraseSignal` with the action tag and side.
 
-**Trim patterns** (25): "paying myself", "taking profit", "trim half", "taking some off".
+**Exit patterns** (31): "I'm out", "flatten", "close it out", "stopped out", "knocked out", "done with this".
 
-**Exit patterns** (10): "I'm out", "flatten", "close it out", "done for the day".
+**Trim patterns** (23): "paying myself", "taking profit", "taking some off", "covering a piece", "peeling off".
 
-**Stop patterns** (8): "move stop to 600", "stop at breakeven", "tighten the stop".
+**Stop patterns** (9): "move stop to 600", "stop at breakeven", "trailing this".
 
-**Setup patterns** (6 per side): "looking for a long", "watching for short setup". These are lower confidence — the trader is thinking about a trade but hasn't committed.
+**Breakeven patterns** (7): "stop now breakeven", "move stop to breakeven", "stops into the money".
 
-**Add patterns** (6): "got my add on", "adding here".
+**Setup patterns** (6 long + 11 short = 17): "looking for a long", "watching for short setup", "interested in shorts". These are lower confidence — the trader is thinking about a trade but hasn't committed.
+
+There is no dedicated "add" list — adding is determined contextually: if a side-neutral entry pattern matches while the trader already has a position on that side, it becomes an ADD.
 
 The module also has filters to reject false positives:
-- `is_historical_trade_context()`: Catches past-tense language ("yesterday I went long", "earlier I was short")
-- `is_hypothetical_trade_context()`: Catches conditionals ("if it breaks out", "I would go long")
+- `is_historical_trade_context()` (12 patterns): Catches past-tense language ("yesterday I went long", "earlier I was short")
+- `is_hypothetical_trade_context()` (16 patterns): Catches conditionals ("if it breaks out", "I would go long")
 
 ### Layer 2: Cross-Segment Stitching
 
@@ -178,7 +181,7 @@ How it works:
 3. Runs through the frozen ModernBERT encoder to get embeddings
 4. Mean-pools the embeddings across tokens
 5. Passes through a small trained head (LayerNorm → Linear) to get logits
-6. Softmax to get probabilities for each label: NO_ACTION, ENTER_LONG, ENTER_SHORT, ADD, TRIM, EXIT_ALL, MOVE_STOP, MOVE_TO_BREAKEVEN
+6. Softmax to get probabilities for each of 7 labels: NO_ACTION, ENTER_LONG, ENTER_SHORT, TRIM, EXIT_ALL, MOVE_STOP, MOVE_TO_BREAKEVEN
 7. Compares probabilities against per-label thresholds (calibrated during training)
 
 If the classifier says the probability of the detected action is below its threshold, the rule engine's detection gets blocked as a likely false positive.
@@ -225,7 +228,7 @@ Assigns a probability to each potential trade candidate by combining signals fro
 
 **File:** `backend/app/services/interpretation/embedding_gate.py`
 
-An optional pre-filter. Uses a small embedding model (BAAI/bge-small-en-v1.5) to compute semantic similarity between the transcript and 43 canonical trading phrases. If the similarity is below a threshold (default 0.40), the segment is considered not trade-relevant and skipped entirely. This saves processing time on clearly irrelevant speech (market commentary, jokes, etc.).
+An optional pre-filter. Uses a small embedding model (BAAI/bge-small-en-v1.5) to compute semantic similarity between the transcript and 36 canonical trading phrases. If the similarity is below a threshold (default 0.40), the segment is considered not trade-relevant and skipped entirely. This saves processing time on clearly irrelevant speech (market commentary, jokes, etc.).
 
 ---
 
@@ -239,13 +242,14 @@ Every detected intent passes through the risk engine before any order is placed.
 - Is it too old? (signal age vs `stale_intent_ms`)
 - Is the confidence above minimum? (`min_confidence`, default 0.74)
 
-**For entries specifically:**
+**For entries specifically** (checked in this order):
 - Is the effective signal age (intent age + source latency) within `max_entry_signal_age_ms`?
+- Are there any guard reasons flagged by the rule engine? (context-based blockers like recent exit/management cues)
+- Is there a market price available?
 - Is there already a position? (no double entries unless it's an ADD)
 - Does the entry have a stop price? (no-stop entries get blocked)
 - Is the entry price within `max_entry_distance_points` of the current market? (chasing protection)
 - Would the position size exceed `max_contract_size`?
-- Are there any guard reasons flagged by the rule engine? (context-based blockers)
 
 **For management actions** (trims, stops, exits):
 - Is there actually a position to manage?
@@ -260,18 +264,24 @@ The output is a `RiskDecision`: approved or rejected, with a human-readable reas
 
 If the risk engine approves, this module sends the order to NinjaTrader.
 
-The `NinjaTraderExecutor` builds a JSON payload:
+The `NinjaTraderExecutor` builds a JSON payload with 15 fields:
 ```json
 {
   "intent_id": "abc-123",
+  "session_id": "sess-456",
   "account": "Sim101",
   "symbol": "MNQ 03-26",
   "action": "ENTER_LONG",
   "side": "LONG",
   "quantity_hint": 2,
+  "default_contract_size": 3,
+  "time_in_force": "Day",
+  "entry_price": 600.0,
   "stop_price": 580.0,
   "target_price": 620.0,
-  "market_price": 600.0
+  "market_price": 600.0,
+  "evidence_text": "I'm long versus 580",
+  "sent_at": "2025-01-15T14:30:00Z"
 }
 ```
 
@@ -367,7 +377,7 @@ Pydantic models that define the shape of all data in the system:
 
 **File:** `backend/app/core/config.py`
 
-A Pydantic Settings class that reads 73 environment variables from `backend/.env`. Groups:
+A Pydantic Settings class that reads 79 environment variables from `backend/.env`. Groups:
 
 **Transcription**: Which Whisper models to use, CPU vs CUDA, beam sizes, preview intervals, warmup settings.
 

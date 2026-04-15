@@ -135,7 +135,7 @@ A cleanup script (`cleanup_training_data.py`) was developed to address the ident
 | **Repair position state** | For management labels with `position_side=FLAT`, infer correct position from `original_side` field (set during AI labeling) or `last_side` field as fallback | 200 repaired |
 | **Deduplicate** | Remove consecutive entries with the same action label within 3 transcript lines | 13 removed |
 | **Flag impossible state** | Flag management labels that remain `position_side=FLAT` after repair (no side information available) | 6 flagged |
-| **Flag advice patterns** | Regex detection of second-person language (`"you can"`, `"you could"`, `"your stop"`, `"move your"`, `"you must"`) on action-labeled examples | 5 flagged |
+| **Flag advice patterns** | Regex detection of second-person language (`"you can"`, `"you could"`, `"you should"`, `"your stop"`, `"you must"`, `"move your"`, `"you'd"`) on action-labeled examples | 5 flagged |
 
 ### 3.2 Cleanup Results
 
@@ -193,7 +193,7 @@ All three classical models share the same text featurization: **TF-IDF vectoriza
 
 - **Algorithm**: 2-layer feedforward neural network
 - **Key parameters**: Hidden layers `(256, 128)`, `max_iter=300`, `early_stopping=True`, `validation_fraction=0.15`
-- **Characteristics**: Non-linear decision boundaries, early stopping to prevent overfitting. No class weighting — relies on rebalanced training set instead.
+- **Characteristics**: Non-linear decision boundaries, early stopping to prevent overfitting. Uses oversampling with sklearn's `compute_sample_weight("balanced")` to handle class imbalance — each sample is repeated proportionally to its balanced weight, on top of the rebalanced training set.
 
 ### 4.2 Transformer Models (Frozen Encoder + Trained Head)
 
@@ -223,7 +223,7 @@ All models were evaluated using **5-fold cross-validation with transcript-level 
 - **No data leakage**: All examples from a single transcript appear in the same fold. The model never trains on one part of a session and tests on another part of the same session.
 - **Reproducibility**: The hash-based assignment is deterministic.
 
-Within each fold, the training set is rebalanced: `NO_ACTION` examples are downsampled to a maximum ratio of 2.5:1 relative to the most common action class (capped at 6,000 examples), reducing class imbalance during training while preserving the natural distribution in the test set.
+Within each fold, the training set is rebalanced: `NO_ACTION` examples are downsampled to a maximum ratio of 2.5:1 relative to the total number of action examples (capped at 6,000 examples), reducing class imbalance during training while preserving the natural distribution in the test set.
 
 ### 5.2 Metrics
 
