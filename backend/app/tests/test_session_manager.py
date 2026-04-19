@@ -283,7 +283,7 @@ async def test_partial_segment_can_execute_early_preview_entry_and_wait_for_fina
 
 
 async def test_final_segment_confirms_early_preview_without_adding_position(tmp_path: Path) -> None:
-    manager, _bridge = _make_broker_backed_manager(tmp_path, last_price=25045.5)
+    manager, _bridge = _make_broker_backed_manager(tmp_path, last_price=25045.5, default_contract_size=1)
     session = await manager.create_session(
         CreateSessionRequest(config=SessionConfig(enable_early_preview_entries=True, default_contract_size=1))
     )
@@ -482,7 +482,7 @@ async def test_final_segment_emits_interpreter_diagnostic_when_entry_is_blocked(
 
 
 async def test_manual_buy_uses_contract_size_and_forced_wide_brackets(tmp_path: Path) -> None:
-    manager, _bridge = _make_broker_backed_manager(tmp_path, last_price=21243.75)
+    manager, _bridge = _make_broker_backed_manager(tmp_path, last_price=21243.75, default_contract_size=1)
     session = await manager.create_session(CreateSessionRequest(config=SessionConfig()))
 
     updated = await manager.manual_trade(
@@ -719,7 +719,7 @@ async def test_get_broker_state_reuses_recent_bridge_response(tmp_path: Path) ->
 
 
 async def test_get_broker_state_returns_bridge_unavailable_payload(monkeypatch, tmp_path: Path) -> None:
-    manager = SessionManager(Settings(data_dir=tmp_path))
+    manager = SessionManager(Settings(data_dir=tmp_path, default_symbol="NQ", ninjatrader_symbol=""))
     session = await manager.create_session(CreateSessionRequest(config=SessionConfig(symbol="NQ")))
 
     async def fake_fetch(**_kwargs):

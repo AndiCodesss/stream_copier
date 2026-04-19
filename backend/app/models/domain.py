@@ -28,6 +28,9 @@ class ActionTag(str, Enum):
     commentary = "COMMENTARY"
 
 
+ENTRY_ACTIONS = {ActionTag.enter_long, ActionTag.enter_short, ActionTag.add}
+
+
 class TradeSide(str, Enum):
     long = "LONG"
     short = "SHORT"

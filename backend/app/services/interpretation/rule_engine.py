@@ -2045,6 +2045,16 @@ class RuleBasedTradeInterpreter:
         target_price: float | None,
         guard_reason: str | None,
     ) -> float:
+        """Heuristic confidence score based on action type and extracted context.
+
+        Base scores reflect how unambiguous each action type is in spoken
+        language: exit_all (0.93) and breakeven (0.91) use distinctive phrases
+        that rarely appear in non-actionable speech, while setups (0.72) are
+        inherently tentative.  Bonuses reward concrete price levels that
+        corroborate the intent; penalties flag hedging language or guard
+        conditions.  Values were calibrated against the reviewed annotation
+        corpus (see benchmark_models.py).
+        """
         base = {
             ActionTag.enter_long: 0.88,
             ActionTag.enter_short: 0.88,

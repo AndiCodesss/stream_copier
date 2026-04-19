@@ -11,6 +11,7 @@ from typing import Any
 
 from app.core.config import Settings
 from app.models.domain import (
+    ENTRY_ACTIONS,
     ActionTag,
     CreateSessionRequest,
     EventType,
@@ -46,8 +47,12 @@ from app.services.transcription.local_whisper import LocalWhisperTranscriber
 
 _SESSION_SAVE_DEBOUNCE_S = 1.0
 _BROKER_STATE_CACHE_TTL_S = 0.5
-_ENTRY_ACTIONS = {ActionTag.enter_long, ActionTag.enter_short, ActionTag.add}
 _LOGGER = logging.getLogger(__name__)
+
+
+def _tag_value(tag: ActionTag | ManualTradeAction | str) -> str:
+    """Return the string value of an enum tag, handling both enum instances and plain strings."""
+    return tag.value if hasattr(tag, "value") else str(tag)
 
 
 @dataclass
@@ -245,7 +250,7 @@ class SessionManager:
         self._apply_broker_overrides_from_request(session, request)
         await self._sync_session_from_broker(session)
 
-        action = request.action.value if hasattr(request.action, "value") else str(request.action)
+        action = _tag_value(request.action)
         if action == ManualTradeAction.close.value:
             intents = [
                 self._build_manual_intent(
@@ -282,7 +287,7 @@ class SessionManager:
                 session.id,
                 EventType.intent,
                 "Manual trade",
-                intent.tag.value if hasattr(intent.tag, "value") else str(intent.tag),
+                _tag_value(intent.tag),
                 intent.model_dump(mode="json"),
                 patch=SessionPatch(last_intent=intent),
             )
@@ -553,7 +558,7 @@ class SessionManager:
         self._apply_wide_brackets(intent, session)
 
         session.last_intent = intent
-        intent_tag = intent.tag.value if hasattr(intent.tag, "value") else str(intent.tag)
+        intent_tag = _tag_value(intent.tag)
         await self._emit(
             session.id,
             EventType.intent,
@@ -650,7 +655,7 @@ class SessionManager:
             session.id,
             EventType.intent,
             "Early preview entry",
-            preview_intent.tag.value if hasattr(preview_intent.tag, "value") else str(preview_intent.tag),
+            _tag_value(preview_intent.tag),
             {"preview_entry": True, "intent": preview_intent.model_dump(mode="json")},
             patch=SessionPatch(last_intent=preview_intent),
         )
@@ -703,7 +708,7 @@ class SessionManager:
             session.id,
             EventType.intent,
             "Preview flatten",
-            exit_intent.tag.value if hasattr(exit_intent.tag, "value") else str(exit_intent.tag),
+            _tag_value(exit_intent.tag),
             {"preview_flatten": True, "intent": exit_intent.model_dump(mode="json")},
             patch=SessionPatch(last_intent=exit_intent),
         )
@@ -723,7 +728,7 @@ class SessionManager:
     def _apply_wide_brackets(self, intent: TradeIntent, session: StreamSession) -> None:
         if not self._settings.force_wide_brackets:
             return
-        if intent.tag not in _ENTRY_ACTIONS:
+        if intent.tag not in ENTRY_ACTIONS:
             return
 
         side = intent.side
@@ -762,6 +767,7 @@ class SessionManager:
                 force_refresh=force_refresh,
             )
         except Exception:
+            _LOGGER.warning("Broker sync failed for session %s", session.id, exc_info=True)
             return
 
         if not isinstance(state, dict) or not state.get("ok"):
@@ -1142,6 +1148,8 @@ class SessionManager:
             if self._pending_event_writes.get(session_id, 0) == 0:
                 self._pending_event_waiters.pop(session_id, None)
                 self._event_write_locks.pop(session_id, None)
+
+
 def _clean_optional(value: str | None) -> str | None:
     if value is None:
         return None

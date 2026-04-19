@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from app.models.domain import StreamSession
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SessionStore:
@@ -16,6 +19,7 @@ class SessionStore:
             try:
                 sessions.append(StreamSession.model_validate_json(path.read_text(encoding="utf-8")))
             except Exception:
+                _LOGGER.warning("Failed to load session from %s", path, exc_info=True)
                 continue
         return sessions
 

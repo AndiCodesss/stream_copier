@@ -375,7 +375,7 @@ def test_build_metrics_breaks_out_total_and_processing_latency() -> None:
 
 def test_load_model_runs_warmup_when_enabled(monkeypatch) -> None:
     transcriber = LocalWhisperTranscriber(
-        settings=Settings(transcription_warmup_enabled=True),
+        settings=Settings(transcription_warmup_enabled=True, transcription_final_beam_size=2),
         session_id="session",
         model_name="small.en",
         prompt="",

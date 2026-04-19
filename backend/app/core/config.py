@@ -159,7 +159,8 @@ class Settings(BaseSettings):
 
     @property
     def local_intent_classifier_dir(self) -> Path:
-        assert self.local_intent_classifier_artifact_dir is not None
+        if self.local_intent_classifier_artifact_dir is None:
+            raise ValueError("local_intent_classifier_artifact_dir is not configured")
         return self.local_intent_classifier_artifact_dir
 
 

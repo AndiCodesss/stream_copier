@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
@@ -12,6 +13,8 @@ from app.models.domain import (
     UpdateSessionConfigRequest,
 )
 from app.services.session_manager import SessionManager
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def create_router(manager: SessionManager) -> APIRouter:
@@ -154,5 +157,6 @@ def attach_websockets(app: FastAPI, manager: SessionManager) -> None:
         except WebSocketDisconnect:
             return
         except Exception:
+            _LOGGER.exception("Audio ingest error for session %s", session_id)
             await websocket.close(code=1011, reason="Audio ingest error.")
             return

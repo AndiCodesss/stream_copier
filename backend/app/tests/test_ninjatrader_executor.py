@@ -86,8 +86,8 @@ async def test_ninjatrader_executor_posts_command() -> None:
     assert payload["action"] == ActionTag.enter_short.value
     assert payload["side"] == TradeSide.short.value
     assert payload["time_in_force"] == "Day"
-    assert payload["stop_price"] == 21363.75
-    assert payload["target_price"] == 21003.75
+    assert payload["stop_price"] == 21260.0
+    assert payload["target_price"] is None
 
 
 async def test_ninjatrader_executor_reports_transport_failure() -> None:
@@ -103,39 +103,6 @@ async def test_ninjatrader_executor_reports_transport_failure() -> None:
 
     assert result.approved is False
     assert "bridge offline" in result.message
-
-
-async def test_ninjatrader_executor_forces_wide_brackets_when_intent_levels_missing() -> None:
-    request = httpx.Request("POST", "http://127.0.0.1:18080/api/stream-copier/commands")
-    response = httpx.Response(status_code=200, json={"message": "accepted"}, request=request)
-    bridge_client = _FakeBridgeClient(response=response)
-    settings = Settings(
-        wide_stop_points=100.0,
-        wide_target_points=220.0,
-    )
-    executor = NinjaTraderExecutor(settings, bridge_client=bridge_client)  # type: ignore[arg-type]
-    session = StreamSession(
-        config=SessionConfig(default_contract_size=3),
-        market=MarketSnapshot(symbol="MNQ 03-26", last_price=21243.75),
-    )
-    intent = TradeIntent(
-        session_id=session.id,
-        tag=ActionTag.enter_long,
-        side=TradeSide.long,
-        entry_price=21243.75,
-        stop_price=None,
-        target_price=None,
-        evidence_text="manual_enter_long",
-        confidence=1.0,
-        created_at=datetime.now(UTC),
-    )
-
-    result = await executor.execute(session, intent)
-
-    assert result.approved is True
-    payload = bridge_client.payloads[0]
-    assert payload["stop_price"] == 21143.75
-    assert payload["target_price"] == 21463.75
 
 
 async def test_ninjatrader_executor_rejects_when_bridge_payload_ok_false() -> None:

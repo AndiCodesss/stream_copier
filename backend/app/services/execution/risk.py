@@ -3,10 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.core.config import Settings
-from app.models.domain import ActionTag, PositionState, RiskDecision, StreamSession, TradeIntent
+from app.models.domain import ENTRY_ACTIONS, ActionTag, PositionState, RiskDecision, StreamSession, TradeIntent
 
 
-ENTRY_ACTIONS = {ActionTag.enter_long, ActionTag.enter_short, ActionTag.add}
 MANAGE_ACTIONS = {ActionTag.trim, ActionTag.exit_all, ActionTag.move_stop, ActionTag.move_to_breakeven}
 
 

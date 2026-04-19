@@ -9,9 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from app.core.config import Settings
-from app.models.domain import ActionTag, ExecutionResult, StreamSession, TradeIntent, TradeSide
-
-_ENTRY_ACTIONS = {ActionTag.enter_long, ActionTag.enter_short, ActionTag.add}
+from app.models.domain import ExecutionResult, StreamSession, TradeIntent
 
 
 class NinjaTraderBridgeClient:
@@ -127,7 +125,6 @@ class NinjaTraderExecutor:
         configured_account = (session.config.broker_account_override or self._settings.ninjatrader_account or "").strip()
         configured_symbol = (session.config.broker_symbol_override or self._settings.ninjatrader_symbol or "").strip()
         resolved_symbol = configured_symbol or intent.symbol or session.market.symbol
-        stop_price, target_price = self._resolve_brackets(session=session, intent=intent)
         return {
             "intent_id": intent.id,
             "session_id": session.id,
@@ -139,38 +136,12 @@ class NinjaTraderExecutor:
             "default_contract_size": session.config.default_contract_size,
             "time_in_force": self._settings.ninjatrader_time_in_force,
             "entry_price": intent.entry_price,
-            "stop_price": stop_price,
-            "target_price": target_price,
+            "stop_price": intent.stop_price,
+            "target_price": intent.target_price,
             "market_price": session.market.last_price,
             "evidence_text": intent.evidence_text,
             "sent_at": datetime.now(UTC).isoformat(),
         }
-
-    def _resolve_brackets(self, *, session: StreamSession, intent: TradeIntent) -> tuple[float | None, float | None]:
-        stop_price = intent.stop_price
-        target_price = intent.target_price
-        if intent.tag not in _ENTRY_ACTIONS:
-            return stop_price, target_price
-        if not self._settings.force_wide_brackets:
-            return stop_price, target_price
-
-        side = _resolve_entry_side(intent, session)
-        if side is None:
-            return stop_price, target_price
-
-        reference_price = intent.entry_price
-        if reference_price is None:
-            reference_price = session.market.last_price
-        if reference_price is None and session.position is not None:
-            reference_price = session.position.average_price
-        if reference_price is None:
-            return stop_price, target_price
-
-        stop_offset = max(1.0, float(self._settings.wide_stop_points))
-        target_offset = max(stop_offset, float(self._settings.wide_target_points))
-        if side == TradeSide.long:
-            return reference_price - stop_offset, reference_price + target_offset
-        return reference_price + stop_offset, reference_price - target_offset
 
     def _extract_message(self, response: httpx.Response) -> str:
         try:
@@ -220,18 +191,6 @@ def _as_value(value: Any) -> Any:
     if hasattr(value, "value"):
         return value.value
     return value
-
-
-def _resolve_entry_side(intent: TradeIntent, session: StreamSession) -> TradeSide | None:
-    if intent.side is not None:
-        return intent.side
-    if intent.tag == ActionTag.enter_long:
-        return TradeSide.long
-    if intent.tag == ActionTag.enter_short:
-        return TradeSide.short
-    if intent.tag == ActionTag.add and session.position is not None:
-        return session.position.side
-    return None
 
 
 def _bridge_timeout_seconds(settings: Settings) -> float:
