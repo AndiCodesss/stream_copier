@@ -1,3 +1,19 @@
+"""Gemini API fallback for trade intent extraction and confirmation.
+
+When the rule engine and local classifier cannot confidently determine a
+trade intent, this module calls the Gemini LLM via its REST API as a
+fallback. It serves two roles:
+
+1. Extractive fallback -- ask Gemini to extract a structured trade action
+   from the transcript (used in review mode).
+2. Confirmation gate -- ask Gemini to confirm or reject a proposed entry
+   before it is executed (used in auto mode to prevent false positives).
+
+Safety overrides ensure that Gemini's raw output is sanitized: trim-like
+language is not misread as a full exit, side is inferred from context when
+missing, and management actions are blocked when no position is open.
+"""
+
 from __future__ import annotations
 
 import json
@@ -10,6 +26,7 @@ import httpx
 from app.core.config import Settings
 from app.models.domain import ActionTag, PositionState, StreamSession, TradeIntent, TradeSide, TranscriptSegment
 
+# Regex patterns used by safety overrides to distinguish trims from exits.
 _TRIM_HINT_PATTERNS = (
     r"\bpay(?:ing)? yourself\b",
     r"\bpay(?:ing)? myself\b",
@@ -36,6 +53,12 @@ _LONG_HINT_PATTERNS = (r"\blong\b", r"\bbuy(?:ing)?\b")
 
 @dataclass
 class GeminiConfirmation:
+    """Result of asking Gemini to confirm or reject a proposed trade action.
+
+    system_failure=True means the API call itself failed (timeout, network
+    error), as opposed to Gemini deliberately rejecting the intent.
+    """
+
     confirmed: bool
     confidence: float = 0.0
     reason: str | None = None
@@ -44,6 +67,8 @@ class GeminiConfirmation:
 
 
 class GeminiFallbackInterpreter:
+    """Async client that calls Gemini for trade extraction or confirmation."""
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._client: httpx.AsyncClient | None = None
@@ -57,6 +82,7 @@ class GeminiFallbackInterpreter:
             self._client = None
 
     async def interpret(self, session: StreamSession, segment: TranscriptSegment) -> TradeIntent | None:
+        """Ask Gemini to extract a trade action from the transcript segment."""
         if not self.is_available():
             return None
 
@@ -111,6 +137,7 @@ class GeminiFallbackInterpreter:
         proposed_intent: TradeIntent,
         context_text: str | None = None,
     ) -> GeminiConfirmation:
+        """Ask Gemini whether a proposed entry should actually execute."""
         if not self.is_available():
             return GeminiConfirmation(confirmed=False, reason="gemini unavailable", system_failure=True)
 
@@ -266,6 +293,7 @@ def _parse_json_payload(text: str) -> dict[str, Any] | None:
 
 
 def _coerce_action_tag(tag_value: Any, side_value: Any) -> ActionTag | None:
+    """Map Gemini's free-form tag string to a canonical ActionTag enum."""
     token = _norm_token(tag_value)
     side_token = _norm_token(side_value)
 
@@ -329,6 +357,12 @@ def _apply_safety_overrides(
     tag: ActionTag,
     side: TradeSide | None,
 ) -> tuple[ActionTag, TradeSide | None] | None:
+    """Correct or reject unsafe Gemini outputs before they reach execution.
+
+    Prevents exit_all when the text only describes trimming, blocks
+    management actions when no position is open, and infers missing side.
+    Returns None to suppress the action entirely.
+    """
     normalized = _normalize_text(transcript_text)
     has_trim_hint = _contains_any(_TRIM_HINT_PATTERNS, normalized)
     has_hard_exit_hint = _contains_any(_HARD_EXIT_HINT_PATTERNS, normalized)

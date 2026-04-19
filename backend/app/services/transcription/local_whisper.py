@@ -1,3 +1,21 @@
+"""Streaming Whisper-based transcription with dual models (final + preview).
+
+This is the main transcription engine.  It uses the faster-whisper library
+to run OpenAI's Whisper model locally.  The pipeline works as follows:
+
+1. Raw audio arrives via push_audio() and is fed into a speech segmenter.
+2. When the segmenter detects a completed utterance, it goes into a queue.
+3. A background worker picks up queued segments and runs "final" transcription
+   with high accuracy settings (larger beam, repetition penalty, etc.).
+4. While the user is still speaking, a separate "preview" path periodically
+   snapshots the in-progress audio and transcribes it with a faster, smaller
+   model to show live partial results.
+
+Why two models?  The final model prioritizes accuracy (larger beam search,
+n-gram blocking).  The preview model prioritizes speed (greedy decoding)
+so the user sees text appearing in near real-time.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,22 +38,35 @@ from app.services.transcription.segmenter import ReadyAudioSegment, build_speech
 from app.services.transcription.streaming_preview import StreamingPreviewAssembler
 
 _QUEUE_MAX_SEGMENTS = 20
+
+# -- Decode parameters for preview vs. final vs. retry profiles --
 _PREVIEW_TEMPERATURE = 0.0
 _FINAL_TEMPERATURE = 0.0
-_PREVIEW_REPETITION_PENALTY = 1.0
-_FINAL_REPETITION_PENALTY = 1.05
-_FINAL_RETRY_REPETITION_PENALTY = 1.12
-_PREVIEW_NO_REPEAT_NGRAM_SIZE = 0
-_FINAL_NO_REPEAT_NGRAM_SIZE = 3
-_FINAL_RETRY_NO_REPEAT_NGRAM_SIZE = 2
+_PREVIEW_REPETITION_PENALTY = 1.0          # no penalty -- speed over quality
+_FINAL_REPETITION_PENALTY = 1.05           # mild penalty to reduce loops
+_FINAL_RETRY_REPETITION_PENALTY = 1.12     # stronger penalty on retry
+_PREVIEW_NO_REPEAT_NGRAM_SIZE = 0          # disabled for preview speed
+_FINAL_NO_REPEAT_NGRAM_SIZE = 3            # block repeated 3-grams
+_FINAL_RETRY_NO_REPEAT_NGRAM_SIZE = 2      # more aggressive on retry
 _COMPRESSION_RATIO_THRESHOLD = 2.2
 _LOG_PROB_THRESHOLD = -1.0
 _NO_SPEECH_THRESHOLD = 0.6
+# Degenerate detection: catch Whisper hallucination loops.
 _DEGENERATE_MIN_TOKENS = 10
 _TRANSCRIPT_TOKEN_RE = re.compile(r"[a-z0-9']+")
 
 
 class LocalWhisperTranscriber(BaseTranscriber):
+    """Runs Whisper locally with a dual-model architecture (final + preview).
+
+    Audio flows:  push_audio -> segmenter -> queue -> _worker (final)
+                                          |-> _run_preview (preview, concurrent)
+
+    The final path produces high-accuracy transcripts after the speaker
+    stops.  The preview path gives fast partial results while the speaker
+    is still talking.
+    """
+
     def __init__(
         self,
         *,
@@ -52,6 +83,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
         self._engine = settings.transcription_engine
         self._prompt = prompt
         self._on_segment = on_segment
+        # The segmenter splits continuous audio into discrete utterances.
         self._segmenter = build_speech_segmenter(
             sample_rate=settings.speech_target_sample_rate,
             vad_backend=settings.speech_vad_backend,
@@ -66,6 +98,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
             max_duration_ms=settings.speech_max_duration_ms,
         )
         self._segmenter_backend = getattr(self._segmenter, "backend_name", settings.speech_vad_backend)
+        # Preview stabilizer reduces flicker in the live partial text.
         self._streaming_preview = (
             StreamingPreviewAssembler(
                 context_words=settings.transcription_preview_context_words,
@@ -74,6 +107,8 @@ class LocalWhisperTranscriber(BaseTranscriber):
             if self._engine == "streaming"
             else None
         )
+        # Queue of completed utterances waiting for final transcription.
+        # None sentinel signals the worker to shut down.
         self._queue: asyncio.Queue[ReadyAudioSegment | None] = asyncio.Queue(maxsize=_QUEUE_MAX_SEGMENTS)
         self._worker_task: asyncio.Task[None] | None = None
         self._model_task: asyncio.Task[Any] | None = None
@@ -84,6 +119,8 @@ class LocalWhisperTranscriber(BaseTranscriber):
         self._last_error: str | None = None
         self._last_preview_utterance_id: str | None = None
         self._last_preview_duration_ms: int = 0
+        # Locks prevent the final and preview models from running concurrently
+        # on CPU, where parallel inference would thrash the cache.
         self._final_transcribe_lock = asyncio.Lock()
         self._preview_transcribe_lock = asyncio.Lock()
         self._resolved_device: str | None = None
@@ -92,13 +129,15 @@ class LocalWhisperTranscriber(BaseTranscriber):
         self._final_loaded_compute_type: str | None = None
         self._preview_loaded_device: str | None = None
         self._preview_loaded_compute_type: str | None = None
-        self._active_finals = 0
-        self._preview_generation = 0
+        self._active_finals = 0        # how many final transcriptions are in progress
+        self._preview_generation = 0   # incremented to invalidate stale previews
 
     async def start(self) -> None:
+        """Launch the background worker and begin loading both models in parallel."""
         if self._worker_task is not None:
             return
         self._worker_task = asyncio.create_task(self._worker())
+        # Load final and preview models concurrently on background threads.
         self._model_task = asyncio.create_task(asyncio.to_thread(self._load_model))
         self._preview_model_task = asyncio.create_task(asyncio.to_thread(self._load_preview_model))
 
@@ -107,18 +146,21 @@ class LocalWhisperTranscriber(BaseTranscriber):
         return self.runtime_info()
 
     async def push_audio(self, data: bytes, sample_rate: int) -> None:
+        """Resample incoming audio, feed it to the segmenter, and manage previews."""
         if self._last_error is not None:
             raise RuntimeError(self._last_error)
         if self._worker_task is None:
             await self.start()
         pcm16 = resample_pcm16_mono(data, source_rate=sample_rate, target_rate=self._settings.speech_target_sample_rate)
         ready_segments = self._segmenter.push(pcm16)
+        # A completed utterance means the preview for it is now obsolete.
         if ready_segments:
             self._cancel_preview()
         for segment in ready_segments:
             self._reset_preview_state()
             self._last_preview_utterance_id = None
             self._last_preview_duration_ms = 0
+            # Drop oldest segment if queue is full to prevent backpressure.
             if self._queue.full():
                 try:
                     self._queue.get_nowait()
@@ -142,11 +184,13 @@ class LocalWhisperTranscriber(BaseTranscriber):
             self._preview_task = None
 
     async def _worker(self) -> None:
+        """Background loop: pull completed utterances from the queue and transcribe them."""
         while True:
             item = await self._queue.get()
-            if item is None:
+            if item is None:  # shutdown sentinel
                 return
 
+            # Cancel any in-flight preview -- we are about to produce the final text.
             self._cancel_preview()
             self._active_finals += 1
             try:
@@ -201,6 +245,11 @@ class LocalWhisperTranscriber(BaseTranscriber):
         self._preview_task = asyncio.create_task(self._run_preview(snapshot, generation))
 
     async def _run_preview(self, snapshot: ReadyAudioSegment, generation: int) -> None:
+        """Transcribe a snapshot of the in-progress utterance for live display.
+
+        Checks _should_abort_preview at multiple points so it can bail out
+        early if the utterance was finalized or a newer preview was scheduled.
+        """
         try:
             if self._should_abort_preview(snapshot, generation):
                 return
@@ -306,6 +355,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
             return model
 
     def _warm_model(self, model: Any, *, beam_size: int = 1) -> None:
+        """Run a short silent audio through the model to pre-warm caches/JIT."""
         import numpy as np
 
         warmup_audio = np.zeros(int(self._settings.speech_target_sample_rate * 0.35), dtype=np.float32)
@@ -438,6 +488,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
         )
 
     def _cancel_preview(self) -> None:
+        """Invalidate in-flight previews by bumping the generation counter."""
         self._preview_generation += 1
         preview_task = self._preview_task
         if preview_task is not None and not preview_task.done():
@@ -448,8 +499,10 @@ class LocalWhisperTranscriber(BaseTranscriber):
             self._streaming_preview.reset()
 
     def _should_abort_preview(self, snapshot: ReadyAudioSegment, generation: int) -> bool:
+        """True if this preview is stale (utterance ended or a new preview was scheduled)."""
         if generation != self._preview_generation:
             return True
+        # On CPU, don't preview while final transcription is running.
         if self._preview_requires_quiet_backend() and (self._queue.qsize() > 0 or self._active_finals > 0):
             return True
         current_snapshot = self._segmenter.snapshot()
@@ -458,6 +511,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
         return current_snapshot.utterance_id != snapshot.utterance_id
 
     def _should_skip_preview(self, snapshot: ReadyAudioSegment) -> bool:
+        """On CPU, skip short previews to avoid slowing down final transcription."""
         if self._resolve_device() != "cpu":
             return False
 
@@ -467,6 +521,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
         return False
 
     def _preview_requires_quiet_backend(self) -> bool:
+        """CPU cannot run preview and final in parallel without thrashing."""
         return self._resolve_device() == "cpu"
 
     def _build_metrics(self, item: ReadyAudioSegment, *, emitted_monotonic: float) -> TranscriptionMetrics:
@@ -482,6 +537,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
         )
 
     def _transcribe_final_segment(self, model: Any, pcm16: bytes) -> tuple[str, float]:
+        """Run final (high-accuracy) transcription on a completed utterance."""
         return self._transcribe_with_profile(
             model,
             pcm16,
@@ -490,6 +546,12 @@ class LocalWhisperTranscriber(BaseTranscriber):
         )
 
     def _transcribe_preview_snapshot(self, model: Any, snapshot: ReadyAudioSegment) -> tuple[str, float]:
+        """Run fast preview transcription and stabilize the output text.
+
+        If streaming preview is enabled, only the tail of the audio is
+        transcribed (since the beginning was already committed), and the
+        result is merged with committed words to reduce flicker.
+        """
         if self._streaming_preview is None:
             return self._transcribe_with_profile(
                 model,
@@ -527,12 +589,17 @@ class LocalWhisperTranscriber(BaseTranscriber):
         )
 
     def _slice_preview_audio(self, pcm16: bytes) -> bytes:
+        """Keep only the last N ms of audio for preview transcription.
+
+        Transcribing just the tail is faster and sufficient because earlier
+        audio has already been committed by the preview stabilizer.
+        """
         tail_ms = max(0, int(self._settings.transcription_preview_tail_ms))
         if tail_ms == 0:
             return pcm16
 
         tail_samples = int((self._settings.speech_target_sample_rate * tail_ms) / 1000)
-        tail_bytes = tail_samples * 2
+        tail_bytes = tail_samples * 2  # 2 bytes per 16-bit sample
         if len(pcm16) <= tail_bytes:
             return pcm16
         return pcm16[-tail_bytes:]
@@ -546,8 +613,15 @@ class LocalWhisperTranscriber(BaseTranscriber):
         initial_prompt: str | None = None,
         decode_profile: str = "final",
     ) -> tuple[str, float]:
+        """Core transcription: decode audio, collect text, and handle retries.
+
+        For final transcriptions, if the result looks degenerate (Whisper
+        hallucination loop), it retries with stronger repetition penalties.
+        If the retry is also degenerate, the segment is discarded.
+        """
         import numpy as np
 
+        # Convert 16-bit PCM to float32 in [-1, 1] as Whisper expects.
         audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         prompt = self._prompt if initial_prompt is None else initial_prompt
         segments = self._decode_segments(
@@ -566,6 +640,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
         if not self._is_degenerate_transcript(text):
             return text, confidence
 
+        # Retry with stronger repetition penalty to break the hallucination loop.
         retry_segments = self._decode_segments(
             model,
             audio,
@@ -587,6 +662,11 @@ class LocalWhisperTranscriber(BaseTranscriber):
         initial_prompt: str,
         decode_profile: str,
     ) -> list[Any]:
+        """Call faster-whisper's transcribe() with profile-specific parameters.
+
+        Profiles: "preview" (fast, lenient), "final" (accurate),
+        "final_retry" (aggressive anti-repetition), "warmup" (minimal).
+        """
         kwargs: dict[str, Any] = {
             "language": self._settings.transcription_language,
             "beam_size": beam_size,
@@ -622,6 +702,12 @@ class LocalWhisperTranscriber(BaseTranscriber):
         return list(segments)
 
     def _collect_transcription_result(self, segments: list[Any]) -> tuple[str, float]:
+        """Join Whisper segments into a single string and compute a confidence score.
+
+        Confidence is derived from Whisper's average log-probability,
+        mapped to a [0.3, 0.99] range.  Domain-specific ASR corrections
+        (e.g., trading terminology) are applied before returning.
+        """
         text_parts: list[str] = []
         logprobs: list[float] = []
         for segment in segments:
@@ -639,26 +725,37 @@ class LocalWhisperTranscriber(BaseTranscriber):
         text = apply_trading_asr_corrections(text)
 
         if not logprobs:
-            return text, 0.85
+            return text, 0.85  # default confidence when logprobs unavailable
 
+        # Map average log-prob to [0.3, 0.99] confidence range.
         average = sum(logprobs) / len(logprobs)
         confidence = max(0.3, min(0.99, 1.0 + (average / 5.0)))
         return text, round(confidence, 3)
 
     def _is_degenerate_transcript(self, text: str) -> bool:
+        """Detect Whisper hallucination loops (e.g., "the the the the...").
+
+        Two heuristics:
+        1. Any single word makes up >= 55% of all tokens.
+        2. Consecutive n-gram repetitions exceed thresholds
+           (e.g., a single word repeated 5+ times in a row).
+        Short transcripts (< 10 tokens) are never flagged.
+        """
         tokens = _TRANSCRIPT_TOKEN_RE.findall(text.lower())
         if len(tokens) < _DEGENERATE_MIN_TOKENS:
             return False
 
+        # Heuristic 1: dominant single word.
         most_common_count = Counter(tokens).most_common(1)[0][1]
         if most_common_count / len(tokens) >= 0.55:
             return True
 
+        # Heuristic 2: consecutive repeated n-grams of various sizes.
         repeat_thresholds = (
-            (1, 5),
-            (2, 4),
-            (3, 3),
-            (4, 3),
+            (1, 5),   # single word repeated 5+ times
+            (2, 4),   # bigram repeated 4+ times
+            (3, 3),   # trigram repeated 3+ times
+            (4, 3),   # 4-gram repeated 3+ times
         )
         return any(
             self._has_consecutive_repeated_ngram(tokens, ngram_size=ngram_size, min_repeats=min_repeats)

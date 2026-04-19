@@ -1,9 +1,21 @@
+"""Semantic relevance gate that filters out non-trading transcript segments.
+
+Most live-stream speech is casual conversation unrelated to trading. Before
+running expensive classifier or LLM inference, this gate computes a cosine
+similarity between the incoming text and a set of canonical trading phrases.
+Segments that fall below the similarity threshold are discarded early,
+saving compute on irrelevant speech.
+"""
+
 from __future__ import annotations
 
 from typing import Any
 
 import numpy as np
 
+# Reference phrases representing the full range of trading actions (entries,
+# exits, trims, stop moves). The gate embeds these once at startup and
+# compares every incoming segment against them via cosine similarity.
 _CANONICAL_PHRASES: tuple[str, ...] = (
     "i am going long now",
     "entering a long trade here",
@@ -44,7 +56,13 @@ _CANONICAL_PHRASES: tuple[str, ...] = (
 
 
 class EmbeddingGate:
-    """Semantic gate for trade-relevant transcript segments."""
+    """Cosine-similarity gate using a lightweight sentence embedding model.
+
+    On first use, loads the embedding model and pre-computes normalized
+    vectors for all canonical trading phrases. For each incoming segment,
+    it computes the maximum cosine similarity to any canonical phrase and
+    compares it against the threshold to decide relevance.
+    """
 
     def __init__(self, *, model_name: str = "BAAI/bge-small-en-v1.5", threshold: float = 0.40) -> None:
         self._model_name = model_name
@@ -72,6 +90,7 @@ class EmbeddingGate:
         self._canonical_embeddings_normalized = _normalize_rows(canonical_vectors)
 
     def best_score(self, text: str) -> float:
+        """Return the highest cosine similarity between text and any canonical phrase."""
         candidate = text.strip()
         if not candidate:
             return 0.0

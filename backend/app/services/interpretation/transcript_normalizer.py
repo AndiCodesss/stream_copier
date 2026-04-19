@@ -1,7 +1,18 @@
+"""Post-processing corrections for automatic speech recognition (ASR) errors.
+
+Live speech-to-text engines frequently mishear trading jargon (e.g. "VWAP"
+becomes "view up", "piece" becomes "peace"). This module applies safe,
+pattern-based text replacements to fix these known errors before the
+transcript reaches the interpretation pipeline.
+"""
+
 from __future__ import annotations
 
 import re
 
+# Each tuple maps a compiled regex of a known ASR mis-transcription to its
+# correct trading term. Only high-confidence, unambiguous corrections are
+# included to avoid introducing new errors.
 _LOW_RISK_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bv\s*w\s*a\s*p\b"), "vwap"),
     (re.compile(r"\b(?:view|vw)\s+up\b"), "vwap"),

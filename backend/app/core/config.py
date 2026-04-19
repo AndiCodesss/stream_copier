@@ -1,3 +1,8 @@
+"""Application configuration loaded from environment variables and .env files.
+
+All settings have sensible defaults so the app can start without any .env file.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -8,6 +13,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Central configuration for the entire application.
+
+    Groups settings by concern: server, transcription, speech detection,
+    intent classification, risk management, and broker integration.
+    """
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -102,6 +113,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def normalize_legacy_transcription_config(self) -> "Settings":
+        """Sanitize and clamp settings after loading.
+
+        Replaces deprecated OpenAI model names with local equivalents,
+        validates enum-like fields, and clamps numeric values to safe ranges.
+        """
         legacy_openai_models = {
             "gpt-4o-mini-transcribe",
             "gpt-4o-transcribe",
@@ -166,4 +182,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return a singleton Settings instance (cached after first call)."""
     return Settings()

@@ -1,3 +1,11 @@
+"""Case-insensitive path resolution for Windows paths accessed via WSL.
+
+Windows file systems are case-insensitive, but WSL (Windows Subsystem for
+Linux) treats them as case-sensitive. This module walks the directory tree
+and matches each path component against the actual filesystem casing so that
+files referenced with different capitalizations resolve to the same path.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

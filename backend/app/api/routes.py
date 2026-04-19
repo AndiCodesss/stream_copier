@@ -1,3 +1,10 @@
+"""REST and WebSocket endpoint definitions.
+
+Provides CRUD routes for sessions and two WebSocket endpoints:
+one for streaming real-time session events to the UI, and one for
+ingesting raw audio from the browser microphone.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -18,6 +25,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def create_router(manager: SessionManager) -> APIRouter:
+    """Build the REST API router with all session CRUD and trade endpoints."""
     router = APIRouter()
 
     @router.get("/health")
@@ -87,8 +95,11 @@ def create_router(manager: SessionManager) -> APIRouter:
 
 
 def attach_websockets(app: FastAPI, manager: SessionManager) -> None:
+    """Register WebSocket endpoints directly on the app (outside the REST router)."""
+
     @app.websocket("/ws/sessions/{session_id}/events")
     async def session_events(websocket: WebSocket, session_id: str) -> None:
+        """Push real-time session updates to the UI via pub/sub."""
         # Validate existence before accepting the connection.
         try:
             manager.get_session(session_id)
@@ -119,6 +130,7 @@ def attach_websockets(app: FastAPI, manager: SessionManager) -> None:
 
     @app.websocket("/ws/sessions/{session_id}/audio")
     async def audio_ingest(websocket: WebSocket, session_id: str) -> None:
+        """Receive raw PCM audio chunks from the browser and feed them to the transcriber."""
         try:
             manager.get_session(session_id)
         except KeyError:
@@ -143,6 +155,7 @@ def attach_websockets(app: FastAPI, manager: SessionManager) -> None:
                     continue
 
                 message = json.loads(text)
+                # "audio_config" is sent once at start to negotiate sample rate.
                 if message.get("type") == "audio_config":
                     sample_rate = int(message.get("sample_rate", 48_000))
                     await manager.ensure_transcriber(session_id)
@@ -151,6 +164,7 @@ def attach_websockets(app: FastAPI, manager: SessionManager) -> None:
                 if message.get("type") != "audio_chunk":
                     continue
 
+                # Audio data arrives base64-encoded inside a JSON text frame.
                 sample_rate = int(message.get("sample_rate", sample_rate))
                 data = base64.b64decode(message["pcm_base64"])
                 await manager.push_audio(session_id, data, sample_rate)

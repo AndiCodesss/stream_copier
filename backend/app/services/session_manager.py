@@ -1,3 +1,15 @@
+"""
+Session Manager -- central orchestrator for the Stream Copier backend.
+
+This module ties together every major subsystem: transcription (speech-to-text),
+intent interpretation (rule engine, ML classifier, Gemini fallback), risk checks,
+order execution via NinjaTrader, and real-time event broadcasting over WebSockets.
+
+Each trading session gets its own lifecycle managed here. When audio arrives it is
+transcribed, the transcript is interpreted into a trade intent (buy/sell/exit),
+the intent passes through a risk engine, and -- if approved -- an order is sent
+to the broker. Every step emits a timeline event so the frontend can display it.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -68,6 +80,14 @@ class CachedBrokerState:
 
 
 class SessionManager:
+    """Central orchestrator that owns every trading session's lifecycle.
+
+    Coordinates transcription, intent interpretation, risk evaluation,
+    order execution, broker synchronisation, and real-time event
+    broadcasting. All public methods are called by the HTTP/WebSocket
+    API layer; private methods handle the internal pipeline stages.
+    """
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._sessions: dict[str, StreamSession] = {}
@@ -120,6 +140,7 @@ class SessionManager:
         self._bridge_client = NinjaTraderBridgeClient(settings)
         self._executor = NinjaTraderExecutor(settings, bridge_client=self._bridge_client)
         self._transcribers: dict[str, BaseTranscriber] = {}
+        # Tracks preview entries awaiting confirmation by the final transcript.
         self._pending_preview_executions: dict[str, PendingPreviewExecution] = {}
         self._preview_confirmation_window = timedelta(
             milliseconds=max(1, settings.preview_entry_confirmation_window_ms)
@@ -127,11 +148,14 @@ class SessionManager:
         # Debounce: at most one pending save task per session.
         self._pending_save_tasks: dict[str, asyncio.Task[None]] = {}
         self._event_write_tasks: set[asyncio.Task[None]] = set()
+        # Per-session lock so event log writes for the same session are serialised.
         self._event_write_locks: dict[str, asyncio.Lock] = {}
         self._pending_event_writes: dict[str, int] = {}
         self._pending_event_waiters: dict[str, asyncio.Event] = {}
         self._transcriber_ready_tasks: dict[str, asyncio.Task[None]] = {}
+        # Short-lived cache to avoid hitting the broker bridge on every call.
         self._broker_state_cache: dict[tuple[str, str | None, str | None], CachedBrokerState] = {}
+        # De-duplicates concurrent in-flight broker requests for the same key.
         self._broker_state_requests: dict[
             tuple[str, str | None, str | None],
             asyncio.Task[dict[str, Any]],
@@ -152,6 +176,11 @@ class SessionManager:
         account: str | None = None,
         symbol: str | None = None,
     ) -> dict:
+        """Fetch the current broker position/market state for a session.
+
+        Uses a short TTL cache to avoid flooding the broker bridge with
+        duplicate requests. Returns an error dict if the bridge is unreachable.
+        """
         session = self.get_session(session_id)
         resolved_account, resolved_symbol = self._resolve_broker_query(
             session,
@@ -186,6 +215,9 @@ class SessionManager:
         return session
 
     async def delete_session(self, session_id: str) -> None:
+        """Tear down a session: cancel pending work, close the transcriber,
+        then remove persisted session and event data from disk.
+        """
         session = self._sessions.get(session_id)
         if session is None:
             raise KeyError(session_id)
@@ -204,13 +236,16 @@ class SessionManager:
         if transcriber is not None:
             await transcriber.close()
 
-        # Remove from _sessions last so callbacks during cleanup can still
-        # look up the session (e.g. transcriber flush → on_segment).
+        # Remove from _sessions last so in-flight callbacks (e.g. a
+        # transcriber flush emitting one final segment) can still look it up.
         self._sessions.pop(session_id, None)
         self._session_store.delete(session_id)
         self._store.delete(session_id)
 
     async def create_session(self, request: CreateSessionRequest) -> StreamSession:
+        """Create a new trading session, apply backend defaults, persist it,
+        and emit the initial system events (session created, classifier status).
+        """
         config = request.config.model_copy(deep=True)
         requested_symbol = _clean_optional(config.symbol)
         default_symbol = _clean_optional(self._settings.default_symbol)
@@ -246,6 +281,11 @@ class SessionManager:
         return session.model_copy(deep=True)
 
     async def manual_trade(self, session_id: str, request: ManualTradeRequest) -> StreamSession:
+        """Execute a manual buy/sell/close requested by the user via the UI.
+
+        For a reversal (e.g. buying while short), this generates two intents:
+        first an exit_all to flatten, then a new entry in the opposite direction.
+        """
         session = self.get_session(session_id)
         self._apply_broker_overrides_from_request(session, request)
         await self._sync_session_from_broker(session)
@@ -313,6 +353,9 @@ class SessionManager:
         return session.model_copy(deep=True)
 
     async def update_session_config(self, session_id: str, request: UpdateSessionConfigRequest) -> StreamSession:
+        """Apply partial config updates to a live session (e.g. toggle features,
+        switch transcription model, change broker overrides).
+        """
         session = self.get_session(session_id)
         changes: list[str] = []
         restart_transcriber = False
@@ -389,6 +432,9 @@ class SessionManager:
         return session.model_copy(deep=True)
 
     async def ingest_segment(self, session_id: str, request: TextSegmentRequest) -> StreamSession:
+        """Accept a text transcript segment from an external source (e.g. the
+        REST API) and run it through the normal interpretation pipeline.
+        """
         session = self.get_session(session_id)
         segment = TranscriptSegment(
             session_id=session_id,
@@ -402,10 +448,16 @@ class SessionManager:
         return session.model_copy(deep=True)
 
     async def handle_live_segment(self, segment: TranscriptSegment) -> None:
+        """Callback invoked by the live transcriber when a new segment
+        (partial or final) is produced from the audio stream.
+        """
         session = self.get_session(segment.session_id)
         await self._process_segment(session, segment)
 
     async def push_audio(self, session_id: str, data: bytes, sample_rate: int) -> None:
+        """Feed raw audio bytes into the session's transcriber for
+        real-time speech-to-text processing.
+        """
         transcriber = await self.ensure_transcriber(session_id)
         try:
             await transcriber.push_audio(data, sample_rate)
@@ -458,6 +510,10 @@ class SessionManager:
         await self._bridge_client.close()
 
     async def _process_segment(self, session: StreamSession, segment: TranscriptSegment) -> None:
+        """Core pipeline: route a transcript segment through interpretation,
+        risk checking, and execution. Partial segments only update the UI and
+        optionally trigger preview entries; final segments drive real trades.
+        """
         if segment.status == SegmentStatus.partial:
             session.latest_partial_text = segment.text
             session.latest_partial_metrics = segment.metrics
@@ -479,11 +535,13 @@ class SessionManager:
                 persist_event=False,
                 append_to_session=False,
             )
+            # Preview entries let us act on partial speech before the speaker
+            # finishes, then confirm or roll back once the final text arrives.
             if session.config.enable_early_preview_entries and segment.text.strip():
                 await self._maybe_execute_preview_entry(session, segment)
             return
 
-        # Final segment.
+        # Final segment -- speaker has finished; this text is authoritative.
         session.latest_partial_text = ""
         session.latest_partial_metrics = None
         session.latest_candidate_intent = None
@@ -509,6 +567,8 @@ class SessionManager:
         if not segment.text.strip():
             return
 
+        # If a preview entry was executed earlier from partial text, the final
+        # transcript must confirm it. If it does not, the position is flattened.
         pending_preview = self._get_pending_preview_execution(session.id)
         if pending_preview is not None:
             if self._interpreter.confirm_preview_entry(session, segment, pending_intent=pending_preview.intent):
@@ -537,8 +597,8 @@ class SessionManager:
                 },
             )
             await self._flatten_preview_entry(session, pending_preview)
-            # Fall through to normal interpretation so the final segment's
-            # own trading signal (if any) is not silently lost.
+            # Fall through to normal interpretation -- the final segment may
+            # contain its own valid trading signal that should not be lost.
 
         await self._sync_session_from_broker(session)
 
@@ -568,6 +628,7 @@ class SessionManager:
             patch=SessionPatch(last_intent=intent),
         )
 
+        # In review mode, intents are shown to the user but never auto-executed.
         if not session.config.auto_execute or session.config.execution_mode == ExecutionMode.review:
             return
 
@@ -596,6 +657,11 @@ class SessionManager:
         tag: ActionTag,
         side: TradeSide | None,
     ) -> TradeIntent:
+        """Construct a TradeIntent for a manual (user-initiated) trade.
+
+        Uses current market/position prices as reference and sets confidence
+        to 1.0 since manual trades are explicitly requested by the user.
+        """
         configured_symbol = _clean_optional(session.config.broker_symbol_override) or _clean_optional(
             self._settings.ninjatrader_symbol
         )
@@ -638,6 +704,13 @@ class SessionManager:
         return None
 
     async def _maybe_execute_preview_entry(self, session: StreamSession, segment: TranscriptSegment) -> None:
+        """Attempt an early entry based on partial (incomplete) speech.
+
+        If the interpreter detects a high-confidence entry signal in the
+        partial text, the order is executed immediately. The trade is then
+        held in a pending state until the final transcript either confirms
+        or rejects it (see _flatten_preview_entry for the rejection path).
+        """
         if not session.config.auto_execute or session.config.execution_mode == ExecutionMode.review:
             return
         if self._get_pending_preview_execution(session.id) is not None:
@@ -648,6 +721,8 @@ class SessionManager:
         if preview_intent is None:
             return
 
+        # Keep an unmodified copy for confirmation checking later; the
+        # original will have brackets/prices mutated before execution.
         confirmation_intent = preview_intent.model_copy(deep=True)
         self._apply_wide_brackets(preview_intent, session)
         session.last_intent = preview_intent
@@ -692,6 +767,10 @@ class SessionManager:
         )
 
     async def _flatten_preview_entry(self, session: StreamSession, pending: PendingPreviewExecution) -> None:
+        """Close a position that was opened by a preview entry whose final
+        transcript did not confirm the trade. This is the safety net that
+        prevents the system from holding an unconfirmed position.
+        """
         exit_intent = TradeIntent(
             session_id=session.id,
             tag=ActionTag.exit_all,
@@ -726,11 +805,17 @@ class SessionManager:
         await self._emit_execution(session.id, result)
 
     def _apply_wide_brackets(self, intent: TradeIntent, session: StreamSession) -> None:
+        """Attach wide stop-loss and take-profit prices to entry intents.
+
+        Only runs when force_wide_brackets is enabled in settings. The
+        offsets are calculated from the current market or position price.
+        """
         if not self._settings.force_wide_brackets:
             return
         if intent.tag not in ENTRY_ACTIONS:
             return
 
+        # Infer side from the action tag when the intent does not carry one.
         side = intent.side
         if side is None:
             if intent.tag == ActionTag.enter_long:
@@ -758,6 +843,10 @@ class SessionManager:
             intent.target_price = reference_price - target_offset
 
     async def _sync_session_from_broker(self, session: StreamSession, *, force_refresh: bool = False) -> None:
+        """Pull the latest position and market data from the broker bridge
+        and update the session's in-memory state. Silently returns on failure
+        so that the pipeline can continue with stale data rather than crash.
+        """
         try:
             configured_account, resolved_symbol = self._resolve_broker_query(session)
             state = await self._fetch_broker_state(
@@ -789,6 +878,7 @@ class SessionManager:
                 received_at=utc_now(),
             )
 
+        # Reconcile position: update or clear based on what the broker reports.
         market_position = str(state.get("market_position", "")).upper()
         quantity = int(_as_optional_float(state.get("quantity")) or 0)
         average_price = _as_optional_float(state.get("average_price"))
@@ -824,6 +914,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         cache_key = (session_id, account, symbol)
         if not force_refresh:
+            # Reuse an in-flight request to avoid duplicate network calls.
             in_flight = self._broker_state_requests.get(cache_key)
             if in_flight is not None:
                 return await asyncio.shield(in_flight)
@@ -1059,6 +1150,11 @@ class SessionManager:
         persist_event: bool = True,
         append_to_session: bool = True,
     ) -> None:
+        """Create a timeline event, broadcast it to WebSocket subscribers,
+        and optionally persist the session and event to disk. The `patch`
+        carries incremental state changes so the frontend can update without
+        re-fetching the full session.
+        """
         session = self.get_session(session_id)
         event = TimelineEvent(session_id=session_id, type=event_type, title=title, message=message, data=data)
 
@@ -1081,7 +1177,12 @@ class SessionManager:
             self._schedule_event_write(event)
 
     def _schedule_session_save(self, session_id: str) -> None:
-        """Schedule a debounced session save — at most one write per debounce window."""
+        """Schedule a debounced session save to disk.
+
+        Many events fire in rapid succession (e.g. partial transcripts).
+        Debouncing coalesces them into a single disk write per window,
+        avoiding excessive I/O while still persisting state regularly.
+        """
         task = self._pending_save_tasks.get(session_id)
         if task is not None and not task.done():
             return

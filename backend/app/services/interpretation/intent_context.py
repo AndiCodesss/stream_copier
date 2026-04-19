@@ -1,3 +1,11 @@
+"""Context envelope that bundles all inputs the classifier needs.
+
+Before the ModernBERT classifier can predict an intent, it needs the current
+transcript text plus surrounding context (recent speech, position state,
+market symbol). This module packages those inputs into a single object and
+renders them into the text format the classifier was trained on.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +15,12 @@ from app.models.domain import TradeSide
 
 @dataclass(frozen=True)
 class IntentContextEnvelope:
+    """Immutable snapshot of everything the classifier needs for one prediction.
+
+    Fields capture the current segment, recent context, position state, and
+    market info. The render() method serializes them into the key=value text
+    format expected by the fine-tuned ModernBERT tokenizer.
+    """
     symbol: str
     current_text: str
     current_normalized: str

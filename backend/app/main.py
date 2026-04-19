@@ -1,3 +1,9 @@
+"""FastAPI application entry point.
+
+Creates the web server, registers routes and WebSocket endpoints,
+and configures CORS so the frontend can communicate with the backend.
+"""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -16,6 +22,7 @@ manager = SessionManager(settings)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    """Cleanup hook: shuts down all active sessions when the server stops."""
     yield
     await manager.close()
 

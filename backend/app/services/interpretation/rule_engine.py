@@ -1,3 +1,42 @@
+"""Rule-based trade intent interpreter for live-stream transcript segments.
+
+This is the core interpretation engine. It converts raw speech-to-text
+transcript segments into structured TradeIntent objects by applying a
+multi-layer pipeline:
+
+1. TEXT NORMALIZATION -- ASR corrections, lowercasing, punctuation removal.
+
+2. PATTERN MATCHING -- Hundreds of compiled regex patterns organized by
+   action type (entry, exit, trim, stop move, breakeven, setup). Patterns
+   are tested in a strict priority order so that exits always outrank
+   entries, and non-actionable commentary is filtered before any action
+   is recognized.
+
+3. CANDIDATE WINDOW SYSTEM -- When a segment is ambiguous on its own, the
+   engine opens a time-limited window (default 6 seconds) that collects
+   follow-up fragments. Once enough fragments accumulate, the window is
+   "stitched" into a single text and re-parsed, often recovering intents
+   that were split across multiple speech segments.
+
+4. LOCAL CLASSIFIER OVERLAY -- A fine-tuned ModernBERT model can veto
+   low-confidence rule matches (blocking false positives) or promote
+   missed signals when both the classifier and the action_language regex
+   library agree (recovering false negatives).
+
+5. GEMINI CONFIRMATION GATE -- In auto-execution mode, entry intents are
+   sent to the Gemini LLM for a second opinion before execution. A
+   fail-open mechanism allows strong rule signals through when Gemini is
+   unavailable.
+
+6. PRICE RESOLUTION -- Traders often speak prices as shorthand ("long
+   versus 50", "stop at ninety two"). The price resolver expands these
+   into full values by trying multiple numeric interpretations and
+   selecting the one closest to the current market price.
+
+State is maintained per session in FlowState objects that track pending
+entries, recent fragments, the candidate window, and duplicate suppression.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +60,14 @@ from app.services.interpretation.local_classifier import IntentClassifierPredict
 from app.services.interpretation.transcript_normalizer import apply_trading_asr_corrections
 
 
+# ---------------------------------------------------------------------------
+# REGEX PATTERN GROUPS
+# Each list targets a specific trade action. Patterns use word boundaries
+# (\b) to avoid partial matches and negative lookaheads (?!...) to exclude
+# phrases that look similar but mean something different.
+# ---------------------------------------------------------------------------
+
+# "Seed" phrases that suggest a small initial entry (e.g. "putting a piece on").
 ENTRY_SEED_PATTERNS = [
     r"\b(?:putting|put|got|have|in)\s+(?:a\s+)?(?:little|small)?\s*(?:piece|peace)\s+on\b",
     r"\b(?:putting|put|got|get|have)\s+something\s+on(?:\s+(?:here|there|now))?(?:\s+(?:just\s+)?in\s+case)?\b",
@@ -28,6 +75,9 @@ ENTRY_SEED_PATTERNS = [
     r"\b(?:piece|peace)\s+on here\b",
     r"\bfeeler on\b",
 ]
+# Direct first-person long entry announcements (e.g. "i m long", "buying here").
+# Negative lookahead (?!\s+bias) prevents matching "i m long bias" which is
+# commentary about directional outlook, not an actual entry.
 DIRECT_LONG_PATTERNS = [
     r"\bi m long\b(?!\s+bias(?:ed)?)",
     r"\bi am long\b(?!\s+bias(?:ed)?)",
@@ -45,6 +95,7 @@ DIRECT_LONG_PATTERNS = [
     r"\bi will get long again\b",
 ]
 ENTRY_STRONG_LONG_PATTERNS = [pattern for pattern in DIRECT_LONG_PATTERNS if pattern != r"\blong here\b"]
+# Direct first-person short entry announcements.
 DIRECT_SHORT_PATTERNS = [
     r"\bi m short\b(?!\s+(?:bias(?:ed)?|because\b))",
     r"\bi am short\b(?!\s+(?:bias(?:ed)?|because\b))",
@@ -59,6 +110,7 @@ DIRECT_SHORT_PATTERNS = [
     r"\bgetting short\b",
 ]
 ENTRY_STRONG_SHORT_PATTERNS = [pattern for pattern in DIRECT_SHORT_PATTERNS if pattern != r"\bshort here\b"]
+# Strong, unambiguous self-entry patterns used for preview confirmation.
 STRONG_SELF_LONG_ENTRY_PATTERNS = [
     r"\bi m long\b(?!\s+bias(?:ed)?)",
     r"\bi am long\b(?!\s+bias(?:ed)?)",
@@ -75,7 +127,11 @@ STRONG_SELF_SHORT_ENTRY_PATTERNS = [
     r"\bi m in this short\b",
     r"\bi am in this short\b",
 ]
+# Tokens that, combined with a strong entry phrase, indicate a real trade with
+# risk parameters (stop level, risk amount). Used for preview entry validation.
 STRONG_ENTRY_RISK_TOKENS = ("versus", "stop", "risk", "risking", "under", "over", "below", "above", "reclaim")
+# When a new segment starts with these words, it is likely completing the
+# previous segment's thought (e.g. prev: "i m long" + curr: "versus 800").
 ENTRY_CONTINUATION_PREFIX_PATTERNS = [
     # Conjunctions
     r"^(?:and|or|but|so|then|because)\b",
@@ -93,6 +149,8 @@ ENTRY_CONTINUATION_PREFIX_PATTERNS = [
     r"^(?:break ?even|even|be)\b",
     r"^(?:my stop|to be|to break ?even)\b",
 ]
+# When a segment ends with these words, the thought is likely unfinished
+# and the next segment should be stitched to it before interpretation.
 ENTRY_INCOMPLETE_SUFFIX_PATTERNS = [
     # Conjunctions / pronouns
     r"\b(?:and|or|but|so|then|because)$",
@@ -115,6 +173,8 @@ ENTRY_INCOMPLETE_SUFFIX_PATTERNS = [
     r"\b(?:my stop|stop|stops)$",
     r"\b(?:break)$",
 ]
+# Filler words at the start of a sentence that should be ignored when
+# checking for entry phrases (e.g. "all right long here" -> "long here").
 ENTRY_LEADIN_PATTERN = (
     r"^(?:(?:all\s+right|alright|okay|ok|right|so|yes|yeah|yep|yup|now|well|again|then|mate|folks|guys|"
     r"let\s+s\s+see(?:\s+then)?)\s+)*"
@@ -146,6 +206,7 @@ ENTRY_CONTEXTUAL_ACTION_HINTS = (
 )
 SETUP_LONG_PATTERNS = [r"\blooking for (?:the |a )?long\b", r"\bif we pull back.*long\b"]
 SETUP_SHORT_PATTERNS = [r"\blooking for (?:the |a )?short\b", r"\bif we pop.*short\b"]
+# Phrases indicating the trader is closing their entire position.
 EXIT_PATTERNS = [
     r"\bi m out\b(?!\s+(?:here\b|of here\b|there\b))",
     r"\bi am out\b(?!\s+(?:here\b|of here\b|there\b))",
@@ -159,6 +220,7 @@ EXIT_PATTERNS = [
     r"\bi m flat\b",
     r"\bi am flat\b",
 ]
+# Exit phrases preceded by "if" or "or" -- these are conditional, not immediate.
 CONDITIONAL_EXIT_PATTERNS = [
     r"\bif\b[^.]{0,160}\bi m out\b",
     r"\bif\b[^.]{0,160}\bi am out\b",
@@ -167,6 +229,8 @@ CONDITIONAL_EXIT_PATTERNS = [
     r"\b(?:doesn t|does not|don t|do not)\b[^.]{0,160}\bi m out\b",
     r"\b(?:doesn t|does not|don t|do not)\b[^.]{0,160}\bi am out\b",
 ]
+# Exit-like phrases that should NOT trigger an exit (historical recap,
+# third-person references, hypothetical scenarios).
 NON_ACTIONABLE_EXIT_PATTERNS = [
     r"\bi ll read (?:the )?last few questions i m out\b",
     r"\balmost stopped out\b",
@@ -198,6 +262,8 @@ NON_ACTIONABLE_EXIT_PATTERNS = [
     r"\byou stopped out\b",
     r"\bstopped out on the runner\b.*\bit s all right\b",
 ]
+# Broad non-actionable commentary patterns -- historical, hypothetical,
+# second-person advice, or references to other traders.
 NON_ACTIONABLE_TRADE_PATTERNS = [
     r"\b(?:still\s+)?not paying myself\b",
     r"\bhow s me being able to pay myself\b",
@@ -252,6 +318,8 @@ NON_ACTIONABLE_TRADE_PATTERNS = [
     r"\bwas (?:long|short)\b.*\bthen i took the (?:long|short)\b",
     r"\blet s say you(?: re| are)?\s+(?:buying|selling|long|short)\b",
 ]
+# Patterns that are non-actionable only in auto-execution mode. In review
+# mode these are shown as advisory intents for the user to confirm.
 AUTO_ONLY_NON_ACTIONABLE_TRADE_PATTERNS = [
     r"\byou can (?:go|get|be) (?:long|short)\b",
     r"\byou can buy here\b",
@@ -347,6 +415,8 @@ ADD_TENTATIVE_PATTERNS = [
     r"\blook for an add\b",
     r"\badd on pops\b",
 ]
+# Patterns that extract a stop/risk price (e.g. "long versus 800", "stop at 50").
+# The named group (?P<price>...) captures the raw price text for resolution.
 RISK_PATTERNS = [
     r"\b(?:long|short)\s+versus\s+(?P<price>[\w\.\s]+)",
     r"\bversus\s+(?P<price>[\w\.\s]+)",
@@ -373,7 +443,10 @@ TARGET_PATTERNS = [
 ]
 ENTRY_PATTERNS = [r"\bat (?P<price>[\w\.\s]+)", r"\bfrom (?P<price>[\w\.\s]+)", r"\bthrough (?P<price>[\w\.\s]+)"]
 
+# Matches a numeric price token like "800", "19450.25", or "50".
 PRICE_TOKEN_PATTERN = re.compile(r"(?P<num>\d{1,5}(?:\.\d{1,2})?)")
+# Lookup tables for converting spoken numbers to integers
+# (e.g. "nineteen fifty" -> 1950). Used by the price resolution algorithm.
 _NUMBER_WORDS: dict[str, int] = {
     "zero": 0,
     "oh": 0,
@@ -409,6 +482,7 @@ _NUMBER_WORDS: dict[str, int] = {
 _SCALE_WORDS: dict[str, int] = {"hundred": 100, "thousand": 1000}
 _NUMBER_FILLER_WORDS = {"and", "the", "a", "an"}
 _GROUP_SEPARATOR_WORDS = {"oh", "o"}
+# Quick-check keywords used by the relevance gate before full pattern matching.
 TRADE_KEYWORDS = (
     "long",
     "short",
@@ -464,6 +538,8 @@ FOREIGN_CONTEXT_PATTERNS = [
     r"\bstocks that i m long in\b",
     r"\bstill holding this long on\b",
 ]
+# Maps each futures contract root to its family of aliases so that "NQ" and
+# "MNQ" are recognized as the same instrument.
 SESSION_SYMBOL_ALIASES: dict[str, set[str]] = {
     "NQ": {"nq", "mnq"},
     "MNQ": {"nq", "mnq"},
@@ -508,6 +584,8 @@ FOREIGN_INSTRUMENT_TOKENS = {
 
 @dataclass
 class ParseContext:
+    """Preprocessed transcript segment ready for pattern matching."""
+
     text: str
     normalized: str
     market_price: float | None
@@ -518,6 +596,8 @@ class ParseContext:
 
 @dataclass
 class PendingEntry:
+    """Tracks an entry that was announced but awaits a stop price to complete."""
+
     side: TradeSide
     created_at: datetime
     seed_price: float | None
@@ -535,6 +615,14 @@ class RecentFragment:
 
 @dataclass
 class CandidateWindow:
+    """Time-limited collection of fragments that might form a trade signal.
+
+    Opens when a segment scores above the open threshold. Subsequent
+    fragments extend the window if they arrive within the timeout. When the
+    window expires or an intent is found, accumulated fragments are stitched
+    together and re-parsed as a single text.
+    """
+
     opened_at: datetime
     updated_at: datetime
     probability: float
@@ -546,6 +634,8 @@ class CandidateWindow:
 
 @dataclass
 class FlowState:
+    """Per-session mutable state that persists across consecutive segments."""
+
     pending_entry: PendingEntry | None = None
     last_management_at: datetime | None = None
     last_exit_at: datetime | None = None
@@ -580,6 +670,18 @@ class ConfirmationDecision:
 
 
 class RuleBasedTradeInterpreter:
+    """Central interpretation engine that converts transcript text into trade intents.
+
+    Combines regex pattern matching, a candidate window system for fragmented
+    speech, a local ModernBERT classifier, and an optional Gemini LLM
+    confirmation gate. Each incoming segment passes through these layers in
+    sequence; the first layer to produce a confident result wins.
+
+    The interpreter maintains per-session state (FlowState) so it can stitch
+    adjacent segments, suppress duplicate intents, and track pending entries
+    that need a follow-up stop price.
+    """
+
     def __init__(
         self,
         *,
@@ -637,6 +739,13 @@ class RuleBasedTradeInterpreter:
             self._local_classifier.close()
 
     async def interpret(self, session: StreamSession, segment: TranscriptSegment) -> TradeIntent | None:
+        """Main entry point: interpret one finalized transcript segment.
+
+        Pipeline: normalize text -> run rule parser -> apply classifier
+        overlay -> check candidate window for recovery -> optionally
+        confirm with Gemini -> optionally fall back to Gemini extraction.
+        Returns a TradeIntent if an actionable signal is found, else None.
+        """
         compacted_text = _compact_repeated_trade_text(segment.text)
         self._diagnostics.pop(session.id, None)
         context = ParseContext(
@@ -767,6 +876,12 @@ class RuleBasedTradeInterpreter:
         return intent
 
     def interpret_preview_entry(self, session: StreamSession, segment: TranscriptSegment) -> TradeIntent | None:
+        """Check whether a partial transcript looks like a high-confidence entry.
+
+        Used by the preview system to show a pending trade card before the
+        segment is finalized. Only returns an intent when there is a strong
+        first-person entry phrase with an explicit stop price.
+        """
         if session.position is not None:
             return None
         compacted_text = _compact_repeated_trade_text(segment.text)
@@ -848,10 +963,19 @@ class RuleBasedTradeInterpreter:
         entry_text: str,
         mutate_state: bool,
     ) -> TradeIntent | None:
+        """Core rule-based parser that tests patterns in strict priority order.
+
+        Priority: cancel > non-actionable filters > conditional exit >
+        exit > breakeven > stop move > trim > advisory > add > entry >
+        pending entry completion > setup. Returns the first matching
+        intent, or None.
+        """
         text = context.normalized
         if session.position is not None:
             state.last_side = session.position.side
         pending = self._get_pending_entry(state, received_at=context.received_at, mutate_state=mutate_state)
+
+        # --- Foreign instrument guard: ignore trade-like text about other markets ---
         if self._mentions_session_instrument(analysis_text, session):
             state.active_instrument = None
             state.active_instrument_at = None
@@ -862,6 +986,8 @@ class RuleBasedTradeInterpreter:
                 state.active_instrument_at = context.received_at
         if self._active_foreign_instrument(state, received_at=context.received_at) is not None and self._looks_trade_candidate(analysis_text):
             return None
+
+        # --- Non-actionable commentary filter ---
         if self._is_non_actionable_trade_commentary(analysis_text, session=session) or self._is_non_actionable_entry_commentary(analysis_text):
             if not self._allows_setup_seed_entry_override(session=session, state=state, context=context, text=text):
                 return None
@@ -885,6 +1011,8 @@ class RuleBasedTradeInterpreter:
         if _matches_any(NON_ACTIONABLE_EXIT_PATTERNS, analysis_text):
             return None
 
+        # --- Conditional exits ("if X I'm out") become stop moves when a
+        # price and risk keyword are present; otherwise they are ignored. ---
         conditional_exit_stop = self._find_price(analysis_text, context, RISK_PATTERNS + STOP_PATTERNS)
         if _matches_any(CONDITIONAL_EXIT_PATTERNS, analysis_text):
             if conditional_exit_stop is not None and session.position is not None and (
@@ -1041,6 +1169,7 @@ class RuleBasedTradeInterpreter:
                 mutate_state=mutate_state,
             )
 
+        # --- Entry detection: resolve side from text, state, or active setup ---
         entry_side = self._detect_entry_side(
             entry_text,
             market_price=context.market_price,
@@ -1048,6 +1177,8 @@ class RuleBasedTradeInterpreter:
         )
         entry_trigger = self._is_entry_trigger(entry_text) or (add_now and session.position is None)
         if entry_trigger:
+            # Side resolution cascade: explicit text > last detected side >
+            # active setup hint > pending entry side
             side = entry_side or side_from_text or state.last_side
             if side is None:
                 side = self._active_setup_side_hint(state, received_at=context.received_at)
@@ -1073,6 +1204,8 @@ class RuleBasedTradeInterpreter:
 
             return None
 
+        # --- Pending entry completion: an earlier segment announced "long here"
+        # and this segment provides the missing stop price. ---
         if pending is not None and risk_stop is not None:
             if mutate_state:
                 state.pending_entry = None
@@ -1308,6 +1441,13 @@ class RuleBasedTradeInterpreter:
         parser_intent: TradeIntent | None,
         classifier_prediction: IntentClassifierPrediction | None,
     ) -> TradeIntent | None:
+        """Attempt to recover a missed intent by stitching candidate window fragments.
+
+        When the parser found nothing (or only a setup), this method joins
+        all fragments collected in the candidate window into one text and
+        re-runs the full parser + classifier pipeline on it. This handles
+        cases where an entry was split across 2-3 short speech segments.
+        """
         state = self._get_state(session.id, mutate_state=True)
         window = self._active_candidate_window(state, received_at=context.received_at, mutate_state=True)
         if window is None or len(window.fragments) < 2:
@@ -1373,6 +1513,13 @@ class RuleBasedTradeInterpreter:
         parser_intent: TradeIntent | None,
         classifier_prediction: IntentClassifierPrediction | None,
     ) -> TradeIntent | None:
+        """Let the classifier veto or promote the parser's result.
+
+        If the parser found an intent but the classifier strongly disagrees
+        (high no_action probability), the intent is blocked. If the parser
+        found nothing but the classifier and action_language regex both
+        agree on an action, the classifier "promotes" a new intent.
+        """
         if classifier_prediction is None:
             return parser_intent
 
@@ -1421,6 +1568,9 @@ class RuleBasedTradeInterpreter:
         prediction: IntentClassifierPrediction,
         text: str,
     ) -> bool:
+        """Return True if the classifier's no_action probability is high enough
+        to veto the parser's intent, unless the rule match is very strong.
+        """
         support_probability = self._classifier_support_probability(intent, prediction)
         support_threshold = prediction.threshold_for(
             intent.tag,
@@ -1468,6 +1618,9 @@ class RuleBasedTradeInterpreter:
         entry_text: str,
         classifier_prediction: IntentClassifierPrediction,
     ) -> TradeIntent | None:
+        """Promote an intent the parser missed, if the classifier and
+        action_language regex library both agree on the same action type.
+        """
         signal = detect_present_trade_signal(
             analysis_text,
             position_side=session.position.side if session.position is not None else None,
@@ -1611,6 +1764,11 @@ class RuleBasedTradeInterpreter:
         }
 
     def _get_state(self, session_id: str, *, mutate_state: bool) -> FlowState:
+        """Retrieve or create per-session state.
+
+        When mutate_state=False, returns a deep copy so that speculative
+        parsing (e.g. preview, candidate window) does not alter real state.
+        """
         state = self._states.get(session_id)
         if state is None:
             if mutate_state:
@@ -1674,6 +1832,7 @@ class RuleBasedTradeInterpreter:
         )
 
     def _prune_temporal_state(self, state: FlowState, *, received_at: datetime, mutate_state: bool) -> None:
+        """Remove expired fragments and candidate windows based on time limits."""
         recent_cutoff = received_at - max(self._candidate_window, self._candidate_preroll_window)
         if state.recent_fragments:
             retained_fragments = [
@@ -1725,6 +1884,7 @@ class RuleBasedTradeInterpreter:
         context: ParseContext,
         assessment: CandidateAssessment,
     ) -> None:
+        """Open a new candidate window or extend the existing one with a new fragment."""
         current_fragment = RecentFragment(
             text=context.text.strip(),
             normalized=context.normalized,
@@ -1866,6 +2026,7 @@ class RuleBasedTradeInterpreter:
         return True
 
     def _analysis_text(self, state: FlowState, *, text: str, received_at: datetime) -> str:
+        """Stitch the current segment with the previous one for broader context."""
         if state.recent_text is None or state.recent_text_at is None:
             return text
         if received_at - state.recent_text_at > self._context_stitch_window:
@@ -1873,6 +2034,7 @@ class RuleBasedTradeInterpreter:
         return f"{state.recent_text} {text}".strip()
 
     def _entry_text(self, state: FlowState, *, text: str, received_at: datetime) -> str:
+        """Build stitched text for entry detection, only when continuation is likely."""
         if state.recent_text is None or state.recent_text_at is None:
             return text
         if received_at - state.recent_text_at > self._context_stitch_window:
@@ -2005,6 +2167,7 @@ class RuleBasedTradeInterpreter:
         return _matches_any(ENTRY_SEED_PATTERNS, text)
 
     def _find_price(self, text: str, context: ParseContext, patterns: list[str]) -> float | None:
+        """Try each price-extraction pattern and resolve the first match."""
         for pattern in patterns:
             match = re.search(pattern, text)
             if not match:
@@ -2247,6 +2410,7 @@ class RuleBasedTradeInterpreter:
         return None
 
     def _should_suppress_duplicate_intent(self, state: FlowState, *, context: ParseContext, intent: TradeIntent) -> bool:
+        """Prevent the same intent from firing twice within a short time window."""
         if state.recent_intent_tag is None or state.recent_intent_at is None:
             return False
         age = context.received_at - state.recent_intent_at
@@ -2333,6 +2497,7 @@ def _normalize(text: str) -> str:
 
 
 def _compact_repeated_trade_text(text: str) -> str:
+    """Remove duplicate sentences caused by ASR stuttering or echoing."""
     compacted = re.sub(r"\s+", " ", text).strip()
     if not compacted:
         return compacted
@@ -2427,6 +2592,13 @@ def _symbol_root(symbol: str | None) -> str | None:
 
 
 def _resolve_price(raw_text: str, market_price: float | None) -> float | None:
+    """Convert a raw spoken price string into a float, using market context.
+
+    Handles digit strings ("800"), word numbers ("nineteen fifty"), fractional
+    suffixes ("quarter", "half"), and shorthand that omits leading digits
+    (e.g. "50" near market price 19450 resolves to 19450). When multiple
+    interpretations are possible, picks the one closest to market_price.
+    """
     raw_text = raw_text.strip().lower()
     raw_text = raw_text.replace("-", " ")
     raw_text = re.sub(r"(?<=\d),(?=\d)", "", raw_text)
@@ -2464,6 +2636,7 @@ def _resolve_price(raw_text: str, market_price: float | None) -> float | None:
 
 
 def _extract_numeric_candidates(raw_text: str) -> list[float]:
+    """Extract all possible numeric values from the raw price text."""
     candidates: list[float] = []
 
     match = PRICE_TOKEN_PATTERN.search(raw_text)
@@ -2489,6 +2662,7 @@ def _extract_numeric_candidates(raw_text: str) -> list[float]:
 
 
 def _extract_word_number_candidates(raw_text: str) -> list[int]:
+    """Parse spoken number words into integer candidates (e.g. "nineteen fifty")."""
     cleaned_tokens = [re.sub(r"[^a-z]", "", token) for token in raw_text.split()]
     tokens = [
         token
@@ -2519,6 +2693,9 @@ def _extract_word_number_candidates(raw_text: str) -> list[int]:
 
 
 def _parse_number_words(tokens: list[str]) -> int | None:
+    """Convert a sequence of word tokens into a single integer using
+    conventional English number rules (e.g. "nineteen" + "hundred" = 1900).
+    """
     total = 0
     current = 0
     consumed = False
@@ -2550,6 +2727,11 @@ def _parse_number_words(tokens: list[str]) -> int | None:
 
 
 def _extract_shorthand_groups(tokens: list[str]) -> list[list[int]]:
+    """Split tokens into digit-group partitions for shorthand prices.
+
+    Traders say prices as digit groups: "nineteen fifty" means 19-50 = 1950.
+    This function finds all valid 2-4 group partitions of the token sequence.
+    """
     compact_tokens = [token for token in tokens if token not in _NUMBER_FILLER_WORDS]
     if not compact_tokens or any(token in _SCALE_WORDS for token in compact_tokens):
         return []
@@ -2611,6 +2793,11 @@ def _build_grouped_number_candidates(groups: list[int]) -> list[int]:
 
 
 def _expand_shorthand_candidates(value: float, market_price: float, quarter: float) -> list[float]:
+    """Generate all possible full prices from a shorthand value near market_price.
+
+    For example, if market_price=19450 and the speaker says "50", this
+    generates candidates like 19450, 19350, 19550, etc.
+    """
     market_int = int(round(market_price))
     integer_value = int(value)
     width = len(str(abs(integer_value)).split(".")[0])

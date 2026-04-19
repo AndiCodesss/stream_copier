@@ -1,3 +1,7 @@
+"""Audio resampling utility for converting microphone input to the sample rate
+expected by the speech-to-text model (16 kHz mono PCM-16).
+"""
+
 from __future__ import annotations
 
 import math

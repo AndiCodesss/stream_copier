@@ -1,3 +1,13 @@
+"""Wrapper around a fine-tuned ModernBERT model for trade intent classification.
+
+This module loads a locally stored ModernBERT transformer plus a small
+classification head (LayerNorm + Linear) from safetensors artifacts. Given
+a transcript segment packaged as an IntentContextEnvelope, it predicts one
+of seven action labels (no_action, enter_long, enter_short, trim, exit_all,
+move_stop, move_to_breakeven) with per-class probabilities and per-class
+confidence thresholds calibrated during training.
+"""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +19,7 @@ from app.core.config import Settings
 from app.models.domain import ActionTag
 from app.services.interpretation.intent_context import IntentContextEnvelope
 
+# The seven labels the classifier was trained on.
 _DEFAULT_LABELS: tuple[ActionTag, ...] = (
     ActionTag.no_action,
     ActionTag.enter_long,
@@ -26,6 +37,14 @@ _MANAGEMENT_LABELS = {ActionTag.trim, ActionTag.exit_all, ActionTag.move_stop, A
 
 @dataclass(frozen=True)
 class IntentClassifierPrediction:
+    """Immutable result of one classifier forward pass.
+
+    Stores the predicted label, its confidence, the full probability
+    distribution across all labels, and the per-label decision thresholds
+    from training. Helper properties aggregate probabilities into action
+    families (entry vs. management vs. no_action).
+    """
+
     tag: ActionTag
     confidence: float
     probabilities: dict[ActionTag, float]
@@ -60,6 +79,14 @@ class IntentClassifierPrediction:
 
 
 class ModernBertIntentClassifier:
+    """Lazy-loading wrapper for the local ModernBERT intent classifier.
+
+    The model is loaded on first use (not at import time) to avoid slow
+    startup when the classifier is disabled. The load() method reads the
+    metadata JSON, tokenizer, base model, and classification head from
+    disk, then moves everything to the configured device (CPU or CUDA).
+    """
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._artifact_dir = settings.local_intent_classifier_dir
@@ -159,6 +186,7 @@ class ModernBertIntentClassifier:
         return dict(self._runtime_info)
 
     def classify(self, envelope: IntentContextEnvelope) -> IntentClassifierPrediction | None:
+        """Run a forward pass and return the predicted label with probabilities."""
         self.load()
         if not self._available:
             return None
@@ -218,6 +246,7 @@ def _resolve_device(torch_module: Any, configured_device: str) -> Any:
 
 
 def _mean_pool(torch_module: Any, hidden_state: Any, attention_mask: Any) -> Any:
+    """Average token embeddings, masking out padding tokens."""
     mask = attention_mask.unsqueeze(-1).type_as(hidden_state)
     summed = (hidden_state * mask).sum(dim=1)
     counts = mask.sum(dim=1).clamp(min=1.0)
@@ -225,6 +254,7 @@ def _mean_pool(torch_module: Any, hidden_state: Any, attention_mask: Any) -> Any
 
 
 class _IntentClassifierHead:
+    """Small classification head: LayerNorm followed by a Linear projection."""
     def __init__(self, *, hidden_size: int, num_labels: int, torch_module: Any) -> None:
         nn = torch_module.nn
         self._module = nn.Sequential(

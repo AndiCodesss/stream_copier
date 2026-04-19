@@ -1,3 +1,15 @@
+"""HTTP client and executor for the NinjaTrader trading platform.
+
+NinjaTrader runs on Windows as a desktop application. This module talks to a
+small HTTP bridge service that sits next to NinjaTrader and translates our
+JSON commands into real broker orders. The communication flow is:
+
+    StreamCopier backend  --(HTTP)-->  Bridge service  --(API)-->  NinjaTrader
+
+Because the backend may run inside WSL while NinjaTrader runs on the Windows
+host, a WSL fallback mechanism is included to resolve the correct IP address.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -13,6 +25,11 @@ from app.models.domain import ExecutionResult, StreamSession, TradeIntent
 
 
 class NinjaTraderBridgeClient:
+    """Low-level HTTP client that sends requests to the NinjaTrader bridge.
+
+    Handles connection details (timeouts, auth headers) and transparently
+    retries on a WSL fallback URL when the primary URL is unreachable.
+    """
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._client = httpx.AsyncClient(
@@ -24,6 +41,7 @@ class NinjaTraderBridgeClient:
         await self._client.aclose()
 
     async def post_command(self, payload: dict[str, Any]) -> httpx.Response:
+        """Send a trade command (entry, exit, etc.) to the bridge."""
         return await self._request(
             "POST",
             "/api/stream-copier/commands",
@@ -37,6 +55,7 @@ class NinjaTraderBridgeClient:
         account: str | None = None,
         symbol: str | None = None,
     ) -> dict[str, Any]:
+        """Query the bridge for the current account/position state."""
         params: dict[str, str] = {}
         if account:
             params["account"] = account
@@ -61,6 +80,9 @@ class NinjaTraderBridgeClient:
         require_success_status: bool = False,
         **kwargs: Any,
     ) -> httpx.Response:
+        # Try the primary URL first, then the WSL fallback if it exists.
+        # This lets the same code work whether running natively on Windows
+        # or inside a WSL Linux environment.
         last_error: Exception | None = None
         for base_url in _bridge_base_urls(self._settings):
             endpoint = f"{base_url}{path}"
@@ -87,6 +109,11 @@ class NinjaTraderExecutor:
         self._bridge_client = bridge_client
 
     async def execute(self, session: StreamSession, intent: TradeIntent) -> ExecutionResult:
+        """Send a trade intent to NinjaTrader and return an ExecutionResult.
+
+        The result is marked approved only when the bridge responds with a
+        success status. Network errors and HTTP 4xx/5xx are treated as rejections.
+        """
         payload = self._build_payload(session=session, intent=intent)
         try:
             response = await self._bridge_client.post_command(payload)
@@ -122,6 +149,11 @@ class NinjaTraderExecutor:
         )
 
     def _build_payload(self, *, session: StreamSession, intent: TradeIntent) -> dict[str, Any]:
+        """Build the JSON payload the bridge expects.
+
+        Account and symbol are resolved with a priority chain:
+        per-session override > global setting > value from the intent/market.
+        """
         configured_account = (session.config.broker_account_override or self._settings.ninjatrader_account or "").strip()
         configured_symbol = (session.config.broker_symbol_override or self._settings.ninjatrader_symbol or "").strip()
         resolved_symbol = configured_symbol or intent.symbol or session.market.symbol
@@ -144,6 +176,10 @@ class NinjaTraderExecutor:
         }
 
     def _extract_message(self, response: httpx.Response) -> str:
+        """Pull a human-readable message from the bridge response.
+
+        Tries JSON first, falls back to raw text. Returns "ok" when empty.
+        """
         try:
             payload = response.json()
         except Exception:
@@ -151,6 +187,7 @@ class NinjaTraderExecutor:
             return text[:200] if text else "ok"
 
         if isinstance(payload, dict):
+            # Bridge may use different key names depending on version
             for key in ("message", "status", "result", "orderId", "order_id"):
                 value = payload.get(key)
                 if value:
@@ -158,14 +195,23 @@ class NinjaTraderExecutor:
         return "ok"
 
     def _is_accepted_response(self, response: httpx.Response) -> bool:
+        """Decide whether the bridge accepted the order.
+
+        Uses "fail-open" parsing: if the response body is not valid JSON or
+        does not contain an explicit "ok" field, any 2xx/3xx status is treated
+        as success. This avoids rejecting orders just because the bridge
+        returned a non-standard response format.
+        """
         if response.status_code >= 400:
             return False
 
         try:
             payload = response.json()
         except Exception:
+            # Non-JSON 2xx response -- assume success (fail-open)
             return True
 
+        # Only override the HTTP status when the bridge explicitly says "ok: false"
         if isinstance(payload, dict) and "ok" in payload:
             return bool(payload.get("ok"))
 
@@ -173,6 +219,10 @@ class NinjaTraderExecutor:
 
 
 def _decode_state_payload(response: httpx.Response) -> dict[str, Any]:
+    """Normalize the bridge's state response into a dict.
+
+    Handles JSON dicts, non-dict JSON values, and plain text gracefully.
+    """
     try:
         payload = response.json()
     except Exception:
@@ -186,6 +236,7 @@ def _decode_state_payload(response: httpx.Response) -> dict[str, Any]:
 
 
 def _as_value(value: Any) -> Any:
+    """Unwrap Python enums to their primitive value for JSON serialization."""
     if value is None:
         return None
     if hasattr(value, "value"):
@@ -205,6 +256,12 @@ def _bridge_headers(settings: Settings) -> dict[str, str]:
 
 
 def _bridge_base_urls(settings: Settings) -> list[str]:
+    """Return the list of bridge URLs to try, primary first.
+
+    When running inside WSL, "localhost" points to the Linux VM, not Windows.
+    A fallback URL pointing to the Windows host IP is appended so the bridge
+    (which runs on Windows alongside NinjaTrader) can still be reached.
+    """
     primary = settings.ninjatrader_bridge_url.rstrip("/")
     urls = [primary]
     fallback = _wsl_windows_host_url(primary)
@@ -214,6 +271,11 @@ def _bridge_base_urls(settings: Settings) -> list[str]:
 
 
 def _wsl_windows_host_url(url: str) -> str | None:
+    """Rewrite a localhost URL to the Windows host IP when running in WSL.
+
+    Only activates when the WSL_DISTRO_NAME env var is set (i.e., inside WSL)
+    and the URL targets localhost/127.0.0.1. Returns None otherwise.
+    """
     if not os.environ.get("WSL_DISTRO_NAME"):
         return None
 
@@ -232,6 +294,11 @@ def _wsl_windows_host_url(url: str) -> str | None:
 
 
 def _resolve_wsl_windows_host_ip() -> str | None:
+    """Read the Windows host IP from /etc/resolv.conf.
+
+    Inside WSL, the DNS nameserver entry in resolv.conf typically points to the
+    Windows host, making it a reliable way to discover that IP address.
+    """
     resolv_conf = Path("/etc/resolv.conf")
     if not resolv_conf.exists():
         return None

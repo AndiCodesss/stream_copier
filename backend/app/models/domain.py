@@ -1,3 +1,10 @@
+"""Domain models shared across the entire application.
+
+Defines enums for trade actions and event types, data classes for sessions,
+transcripts, intents, positions, and the request/response schemas used by
+the REST API. All models use Pydantic for validation and JSON serialization.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -13,6 +20,8 @@ def utc_now() -> datetime:
 
 
 class ActionTag(str, Enum):
+    """Every possible trading action the system can recognize from speech."""
+
     no_action = "NO_ACTION"
     setup_long = "SETUP_LONG"
     setup_short = "SETUP_SHORT"
@@ -28,6 +37,7 @@ class ActionTag(str, Enum):
     commentary = "COMMENTARY"
 
 
+# Actions that open or increase a position (used by risk checks).
 ENTRY_ACTIONS = {ActionTag.enter_long, ActionTag.enter_short, ActionTag.add}
 
 
@@ -37,6 +47,8 @@ class TradeSide(str, Enum):
 
 
 class EventType(str, Enum):
+    """Categories for timeline events shown in the UI."""
+
     info = "INFO"
     warning = "WARNING"
     transcript = "TRANSCRIPT"
@@ -48,6 +60,8 @@ class EventType(str, Enum):
 
 
 class ExecutionMode(str, Enum):
+    """Whether trades execute automatically or require manual confirmation."""
+
     auto = "auto"
     review = "review"
 
@@ -68,6 +82,8 @@ class ConfidenceMixin(BaseModel):
 
 
 class TranscriptionMetrics(BaseModel):
+    """Timing breakdown for a single transcription to measure pipeline speed."""
+
     total_latency_ms: int = Field(default=0, ge=0)
     speech_capture_ms: int = Field(default=0, ge=0)
     processing_ms: int = Field(default=0, ge=0)
@@ -76,6 +92,8 @@ class TranscriptionMetrics(BaseModel):
 
 
 class TranscriptSegment(ConfidenceMixin):
+    """One piece of transcribed speech (partial or final) within a session."""
+
     model_config = ConfigDict(use_enum_values=True)
 
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -89,6 +107,8 @@ class TranscriptSegment(ConfidenceMixin):
 
 
 class MarketSnapshot(BaseModel):
+    """Latest known market prices for the instrument being traded."""
+
     symbol: str = "NQ"
     last_price: float | None = None
     bid_price: float | None = None
@@ -97,6 +117,8 @@ class MarketSnapshot(BaseModel):
 
 
 class PositionState(BaseModel):
+    """Current open position: direction, size, entry price, and bracket levels."""
+
     model_config = ConfigDict(use_enum_values=True)
 
     side: TradeSide
@@ -109,6 +131,8 @@ class PositionState(BaseModel):
 
 
 class SessionConfig(BaseModel):
+    """User-configurable options for a single capture session."""
+
     source_name: str = "Flow Zone Trader"
     symbol: str = "NQ"
     execution_mode: ExecutionMode = ExecutionMode.auto
@@ -131,6 +155,8 @@ class SessionConfig(BaseModel):
 
 
 class TradeIntent(ConfidenceMixin):
+    """A trading action recognized from speech, with confidence and context."""
+
     model_config = ConfigDict(use_enum_values=True)
 
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -152,12 +178,16 @@ class TradeIntent(ConfidenceMixin):
 
 
 class RiskDecision(BaseModel):
+    """Result of the risk engine evaluating whether a trade intent is safe to execute."""
+
     approved: bool
     reason: str
     intent: TradeIntent
 
 
 class ExecutionResult(BaseModel):
+    """Outcome of submitting a trade to the broker (approved or rejected)."""
+
     model_config = ConfigDict(use_enum_values=True)
 
     session_id: str
@@ -171,6 +201,8 @@ class ExecutionResult(BaseModel):
 
 
 class TimelineEvent(BaseModel):
+    """A single entry in the session timeline (shown to the user in the UI)."""
+
     model_config = ConfigDict(use_enum_values=True)
 
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -183,6 +215,8 @@ class TimelineEvent(BaseModel):
 
 
 class StreamSession(BaseModel):
+    """Top-level aggregate: holds all state for one capture session."""
+
     model_config = ConfigDict(use_enum_values=True)
 
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -224,10 +258,14 @@ class SessionPatch(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
+    """REST request body for POST /sessions."""
+
     config: SessionConfig = Field(default_factory=SessionConfig)
 
 
 class UpdateSessionConfigRequest(BaseModel):
+    """Partial update for session config (only non-None fields are applied)."""
+
     enable_partial_intent_detection: bool | None = None
     enable_ai_fallback: bool | None = None
     enable_early_preview_entries: bool | None = None
@@ -237,6 +275,8 @@ class UpdateSessionConfigRequest(BaseModel):
 
 
 class ManualTradeRequest(BaseModel):
+    """REST request body for manually placing a trade via the UI."""
+
     action: ManualTradeAction
     contract_size: int = Field(default=3, ge=1, le=10)
     account: str | None = None
@@ -244,6 +284,8 @@ class ManualTradeRequest(BaseModel):
 
 
 class TextSegmentRequest(ConfidenceMixin):
+    """REST request body for submitting a transcript segment manually."""
+
     text: str
     status: SegmentStatus = SegmentStatus.final
     source: str = "manual"

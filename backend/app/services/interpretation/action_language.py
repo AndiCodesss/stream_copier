@@ -1,3 +1,18 @@
+"""Regex pattern library for detecting trade signals in spoken language.
+
+This module is a curated dictionary of regular expressions organized by
+action type: entries (long/short), exits, trims, stop moves, breakeven,
+and setups. Each pattern list captures the natural phrases a futures trader
+uses when announcing live actions (e.g. "i m long", "stopped out", "paying
+myself"). The module also filters out historical and hypothetical speech
+so that past trades and "what if" scenarios are not mistaken for live actions.
+
+The detection pipeline works in a fixed priority order:
+  historical filter -> setup detection -> hypothetical filter ->
+  exit -> trim -> breakeven -> stop move -> long entry -> short entry ->
+  side-neutral entry
+"""
+
 from __future__ import annotations
 
 import re
@@ -15,6 +30,7 @@ _ACTIONABLE_LABELS = {
     ActionTag.move_to_breakeven,
 }
 
+# Phrases that indicate the speaker is describing a past trade, not a live one.
 _HISTORICAL_PATTERNS = [
     r"\bremember\b",
     r"\byesterday\b",
@@ -30,6 +46,7 @@ _HISTORICAL_PATTERNS = [
     r"\bwe had the\b",
 ]
 
+# Phrases that indicate speculation or advice, not a committed action.
 _HYPOTHETICAL_PATTERNS = [
     r"\bif you\b",
     r"\bif we\b",
@@ -49,6 +66,7 @@ _HYPOTHETICAL_PATTERNS = [
     r"\bnot interested\b",
 ]
 
+# Setup patterns -- the trader is watching for an opportunity, not yet in.
 _SETUP_LONG_PATTERNS = [
     r"\blooking for (?:the |a )?long\b",
     r"\bwatching for (?:the |a )?long\b",
@@ -72,6 +90,7 @@ _SETUP_SHORT_PATTERNS = [
     r"\blooking for downside\b",
 ]
 
+# First-person long entry phrases (e.g. "we re long", "i m in this long").
 _SELF_LONG_PATTERNS = [
     r"\bwe re long\b(?!\s+bias)",
     r"\bwe are long\b(?!\s+bias)",
@@ -98,6 +117,7 @@ _SELF_LONG_PATTERNS = [
     r"\bin this long\b",
 ]
 
+# First-person short entry phrases (e.g. "we re short", "i m in this short").
 _SELF_SHORT_PATTERNS = [
     r"\bwe re short\b(?!\s+bias)",
     r"\bwe are short\b(?!\s+bias)",
@@ -206,7 +226,7 @@ _MOVE_STOP_PATTERNS = [
     r"\bput (?:it |my stop )at \d+\b",
 ]
 
-# Side-neutral entry patterns — the classifier or position context determines the side.
+# Side-neutral entry patterns -- side is inferred from position or classifier.
 _SELF_ENTRY_PATTERNS = [
     r"\b(?:small |a )?piece (?:in |on )?here\b",
     r"\bsmall size (?:in )?here\b",
@@ -244,6 +264,8 @@ _SELF_ENTRY_PATTERNS = [
 
 @dataclass(frozen=True)
 class PhraseSignal:
+    """A detected trade phrase with its action type and inferred side."""
+
     tag: ActionTag
     side: TradeSide | None = None
     source: str = "pattern"
@@ -270,6 +292,11 @@ def detect_setup_signal(text: str) -> PhraseSignal | None:
 
 
 def detect_present_trade_signal(text: str, *, position_side: TradeSide | None) -> PhraseSignal | None:
+    """Scan text for a live trade action phrase, filtering out non-actionable speech.
+
+    Returns the first matching PhraseSignal in priority order (exit before
+    trim before entry), or None if no actionable language is found.
+    """
     if not text.strip():
         return None
     if is_historical_trade_context(text):

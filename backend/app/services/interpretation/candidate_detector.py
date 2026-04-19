@@ -1,3 +1,12 @@
+"""Probability-based candidate assessment for potential trade signals.
+
+When a transcript segment is ambiguous -- it might be a trade action or just
+commentary -- this module assigns a probability score from multiple evidence
+sources (classifier output, regex pattern matches, seed phrases). The rule
+engine uses these probabilities to decide whether to open or extend a
+"candidate window" that collects follow-up fragments for stitched analysis.
+"""
+
 from __future__ import annotations
 
 import re
@@ -18,6 +27,7 @@ _SIDE_HINTS = {
     ActionTag.enter_long: TradeSide.long,
     ActionTag.enter_short: TradeSide.short,
 }
+# Phrases that suggest a trade might be starting (e.g. "small size", "piece on").
 _SEED_PATTERNS = (
     re.compile(r"\b(?:small|smaller)\s+size\b"),
     re.compile(r"\b(?:piece|peace)\s+on\b"),
@@ -29,6 +39,7 @@ _SEED_PATTERNS = (
     re.compile(r"\bstay heavy\b"),
     re.compile(r"\b(?:pay(?:ing|ed)?\s+(?:myself|ourselves)|breakeven|flatten)\b"),
 )
+# Phrases that continue a previous trade thought (e.g. "and versus 800").
 _CONTINUATION_PATTERNS = (
     re.compile(r"^(?:and|but|so|then|now|because)\b"),
     re.compile(r"^(?:versus|under|over|through|at|from|into)\b"),
@@ -39,6 +50,12 @@ _CONTINUATION_PATTERNS = (
 
 @dataclass(frozen=True)
 class CandidateAssessment:
+    """Result of evaluating how likely a segment is to be a real trade signal.
+
+    probability: 0.0-1.0 confidence that this is a genuine trade action.
+    source: which evidence source produced this score (e.g. "classifier_entry").
+    """
+
     probability: float
     source: str
     tag_hint: ActionTag | None = None
@@ -66,6 +83,12 @@ def assess_trade_candidate(
     explicit_signal: PhraseSignal | None,
     setup_signal: PhraseSignal | None,
 ) -> CandidateAssessment | None:
+    """Combine all evidence sources and return the strongest candidate score.
+
+    Gathers probabilities from the classifier, explicit regex signals, setup
+    signals, seed phrases, and continuation patterns. Returns the single
+    highest-probability assessment, or None if no evidence was found.
+    """
     candidates: list[CandidateAssessment] = []
 
     if classifier_prediction is not None:
